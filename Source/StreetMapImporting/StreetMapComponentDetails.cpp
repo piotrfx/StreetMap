@@ -17,7 +17,7 @@
 #include "StreetMapVertex.h"
 #include "Styling/SlateTypes.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SHorizontalBox.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/Text/STextBlock.h"
 

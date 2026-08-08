@@ -169,7 +169,9 @@ void FStreetMapSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 			FMaterialRenderProxy* WireframeMaterialRenderProxy = nullptr;
 			if (GEngine->WireframeMaterial && bIsWireframe)
 			{
-				WireframeMaterialRenderProxy = Collector.RegisterOneFrameMaterialProxy(new FColoredMaterialRenderProxy(GEngine->WireframeMaterial->GetRenderProxy(), FLinearColor(0, 0.5f, 1.f)));
+				FColoredMaterialRenderProxy* NewWireframeMaterialRenderProxy = new FColoredMaterialRenderProxy(GEngine->WireframeMaterial->GetRenderProxy(), FLinearColor(0, 0.5f, 1.f));
+				Collector.RegisterOneFrameMaterialProxy(NewWireframeMaterialRenderProxy);
+				WireframeMaterialRenderProxy = NewWireframeMaterialRenderProxy;
 			}
 
 			if (MustDrawMeshDynamically(View))
@@ -185,7 +187,9 @@ void FStreetMapSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 				FMaterialRenderProxy* MaterialProxy = WireframeMaterialRenderProxy;
 				if (MaterialProxy == nullptr && bCanDrawCollision)
 				{
-					MaterialProxy = Collector.RegisterOneFrameMaterialProxy(new FColoredMaterialRenderProxy(GEngine->ShadedLevelColorationUnlitMaterial->GetRenderProxy(), FColor::Cyan));
+					FColoredMaterialRenderProxy* NewCollisionMaterialProxy = new FColoredMaterialRenderProxy(GEngine->ShadedLevelColorationUnlitMaterial->GetRenderProxy(), FColor::Cyan);
+					Collector.RegisterOneFrameMaterialProxy(NewCollisionMaterialProxy);
+					MaterialProxy = NewCollisionMaterialProxy;
 				}
 
 				// Draw the mesh!

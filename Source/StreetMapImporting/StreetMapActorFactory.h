@@ -14,7 +14,9 @@ public:
 
         //~ Begin UActorFactory Interface
         virtual void PostSpawnActor(UObject* Asset, AActor* NewActor) override;
-        virtual void PostCreateBlueprint(UObject* Asset, AActor* CDO) override;
+        // UActorFactory::PostCreateBlueprint was removed in UE 5.8 - no longer overrides anything,
+        // so "Create Blueprint from this actor" on a StreetMap actor won't auto-populate the CDO's map data.
+        virtual void PostCreateBlueprint(UObject* Asset, AActor* CDO);
         virtual bool CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg) override;
 	//~ End UActorFactory Interface
 };
