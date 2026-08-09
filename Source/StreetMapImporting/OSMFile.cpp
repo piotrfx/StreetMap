@@ -373,6 +373,27 @@ bool FOSMFile::ProcessAttribute( const TCHAR* AttributeName, const TCHAR* Attrib
 					CurrentWayInfo->bIsResidentialBuilding = FMath::FRand() < 0.45f;
 				}
 			}
+			else if( !FCString::Stricmp( CurrentWayTagKey, TEXT( "natural" ) ) )
+			{
+				if( !FCString::Stricmp( AttributeValue, TEXT( "water" ) ) )
+				{
+					CurrentWayInfo->WayType = EOSMWayType::WaterArea;
+				}
+			}
+			else if( !FCString::Stricmp( CurrentWayTagKey, TEXT( "landuse" ) ) )
+			{
+				if( !FCString::Stricmp( AttributeValue, TEXT( "reservoir" ) ) )
+				{
+					CurrentWayInfo->WayType = EOSMWayType::WaterArea;
+				}
+			}
+			else if( !FCString::Stricmp( CurrentWayTagKey, TEXT( "waterway" ) ) )
+			{
+				if( !FCString::Stricmp( AttributeValue, TEXT( "river" ) ) || !FCString::Stricmp( AttributeValue, TEXT( "stream" ) ) )
+				{
+					CurrentWayInfo->WayType = EOSMWayType::River;
+				}
+			}
 			else if( !FCString::Stricmp( CurrentWayTagKey, TEXT( "height" ) ) )
 			{
 				// Check to see if there is a space character in the height value.  For now, we're looking

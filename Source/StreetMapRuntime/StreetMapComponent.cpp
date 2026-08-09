@@ -229,6 +229,9 @@ void UStreetMapComponent::GenerateMesh()
 	const FColor MajorRoadColor = MeshBuildSettings.MajorRoadColor.ToFColor( false );
 	const float HighwayThickness = MeshBuildSettings.HighwayThickness;
 	const FColor HighwayColor = MeshBuildSettings.HighwayColor.ToFColor( false );
+	const float RiverThickness = MeshBuildSettings.RiverThickness;
+	const FColor RiverColor = MeshBuildSettings.RiverColor.ToFColor( false );
+	const FColor WaterAreaColor = MeshBuildSettings.WaterAreaColor.ToFColor( false );
 	const float BuildingBorderThickness = MeshBuildSettings.BuildingBorderThickness;
 	FLinearColor BuildingBorderLinearColor = MeshBuildSettings.BuildingBorderLinearColor;
 	const float BuildingBorderZ = MeshBuildSettings.BuildingBorderZ;
@@ -248,6 +251,7 @@ void UStreetMapComponent::GenerateMesh()
 
 		const auto& Roads = StreetMap->GetRoads();
 		const auto& Nodes = StreetMap->GetNodes();
+		const auto& WaterAreas = StreetMap->GetWaterAreas();
 		const auto& Buildings = StreetMap->GetBuildings();
 
 		for( const auto& Road : Roads )
@@ -265,7 +269,12 @@ void UStreetMapComponent::GenerateMesh()
 					RoadThickness = MajorRoadThickness;
 					RoadColor = MajorRoadColor;
 					break;
-					
+
+				case EStreetMapRoadType::River:
+					RoadThickness = RiverThickness;
+					RoadColor = RiverColor;
+					break;
+
 				case EStreetMapRoadType::Street:
 				case EStreetMapRoadType::Other:
 					break;
@@ -517,6 +526,24 @@ void UStreetMapComponent::GenerateMesh()
 						BuildingBorderColor,
 						MeshBoundingBox );
 				}
+			}
+		}
+
+		// Water areas (ponds, lakes, reservoirs) -- flat filled polygons, same triangulation
+		// approach as the building flat cap, just at ground/road level with no walls.
+		for( int32 WaterAreaIndex = 0; WaterAreaIndex < WaterAreas.Num(); ++WaterAreaIndex )
+		{
+			const auto& WaterArea = WaterAreas[ WaterAreaIndex ];
+
+			bool bWaterAreaWindsClockwise;
+			if( FPolygonTools::TriangulatePolygon( WaterArea.WaterAreaPoints, TempIndices, /* Out */ TriangulatedVertexIndices, /* Out */ bWaterAreaWindsClockwise ) )
+			{
+				TempPoints.SetNum( WaterArea.WaterAreaPoints.Num(), EAllowShrinking::No );
+				for( int32 PointIndex = 0; PointIndex < WaterArea.WaterAreaPoints.Num(); ++PointIndex )
+				{
+					TempPoints[ PointIndex ] = FVector3f( FVector2f(WaterArea.WaterAreaPoints[ ( WaterArea.WaterAreaPoints.Num() - PointIndex ) - 1 ]), RoadZ );
+				}
+				AddTriangles( TempPoints, TriangulatedVertexIndices, FVector3f::ForwardVector, FVector3f::UpVector, WaterAreaColor, MeshBoundingBox );
 			}
 		}
 

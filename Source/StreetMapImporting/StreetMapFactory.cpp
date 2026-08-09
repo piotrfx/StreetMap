@@ -113,6 +113,10 @@ bool UStreetMapFactory::LoadFromOpenStreetMapXMLFile( UStreetMap* StreetMap, FSt
 				RoadType = EStreetMapRoadType::Street;
 				break;
 
+			case FOSMFile::EOSMWayType::River:
+				RoadType = EStreetMapRoadType::River;
+				break;
+
 			default:
 				RoadType = EStreetMapRoadType::Other;
 		}
@@ -312,6 +316,68 @@ bool UStreetMapFactory::LoadFromOpenStreetMapXMLFile( UStreetMap* StreetMap, FSt
 	};
 
 
+	// Adds a water area (pond/lake/reservoir) to the street map using the OpenStreetMap data
+	auto AddWaterAreaForWay = [ConvertLatLongToMetersRelative, OSMToCentimetersScaleFactor](
+		const FOSMFile& OSMFile,
+		UStreetMap& StreetMapRef,
+		const FOSMFile::FOSMWayInfo& OSMWay ) -> bool
+	{
+		if( OSMWay.WayType == FOSMFile::EOSMWayType::WaterArea )
+		{
+			// Require at least three points so that we don't have degenerate polygon!
+			if( OSMWay.Nodes.Num() > 2 )
+			{
+				FStreetMapWaterArea& NewWaterArea = *new( StreetMapRef.WaterAreas )FStreetMapWaterArea();
+
+				FVector2D BoundsMin( TNumericLimits<float>::Max(), TNumericLimits<float>::Max() );
+				FVector2D BoundsMax( TNumericLimits<float>::Lowest(), TNumericLimits<float>::Lowest() );
+
+				NewWaterArea.WaterAreaPoints.AddUninitialized( OSMWay.Nodes.Num() );
+				int32 CurWaterAreaPoint = 0;
+
+				for( const FOSMFile::FOSMNodeInfo* OSMNodePtr : OSMWay.Nodes )
+				{
+					const FOSMFile::FOSMNodeInfo& OSMNode = *OSMNodePtr;
+
+					const double RelativeToLatitude = OSMFile.AverageLatitude;
+					const double RelativeToLongitude = OSMFile.AverageLongitude;
+					const FVector2d NodePos = ConvertLatLongToMetersRelative(
+						OSMNode.Latitude,
+						OSMNode.Longitude,
+						RelativeToLatitude,
+						RelativeToLongitude ) * OSMToCentimetersScaleFactor;
+
+					if( NodePos.X < BoundsMin.X ) { BoundsMin.X = NodePos.X; }
+					if( NodePos.Y < BoundsMin.Y ) { BoundsMin.Y = NodePos.Y; }
+					if( NodePos.X > BoundsMax.X ) { BoundsMax.X = NodePos.X; }
+					if( NodePos.Y > BoundsMax.Y ) { BoundsMax.Y = NodePos.Y; }
+
+					NewWaterArea.WaterAreaPoints[ CurWaterAreaPoint++ ] = NodePos;
+				}
+
+				const bool bIsClosed = NewWaterArea.WaterAreaPoints[ 0 ].Equals( NewWaterArea.WaterAreaPoints[ NewWaterArea.WaterAreaPoints.Num() - 1 ], KINDA_SMALL_NUMBER );
+				if( bIsClosed )
+				{
+					NewWaterArea.WaterAreaPoints.Pop();
+				}
+
+				NewWaterArea.WaterAreaName = OSMWay.Name;
+				NewWaterArea.BoundsMin = BoundsMin;
+				NewWaterArea.BoundsMax = BoundsMax;
+
+				StreetMapRef.BoundsMin.X = FMath::Min( StreetMapRef.BoundsMin.X, BoundsMin.X );
+				StreetMapRef.BoundsMin.Y = FMath::Min( StreetMapRef.BoundsMin.Y, BoundsMin.Y );
+				StreetMapRef.BoundsMax.X = FMath::Max( StreetMapRef.BoundsMax.X, BoundsMax.X );
+				StreetMapRef.BoundsMax.Y = FMath::Max( StreetMapRef.BoundsMax.Y, BoundsMax.Y );
+
+				return true;
+			}
+		}
+
+		return false;
+	};
+
+
 	// Load up the OSM file.  It's in XML format.
 	FOSMFile OSMFile;
 	if( !OSMFile.LoadOpenStreetMapFile( OSMFilePath, bIsFilePathActuallyTextBuffer, FeedbackContext ) )
@@ -335,10 +401,17 @@ bool UStreetMapFactory::LoadFromOpenStreetMapXMLFile( UStreetMap* StreetMap, FSt
 
 	for( const FOSMFile::FOSMWayInfo* OSMWay : OSMFile.Ways )
 	{
-		// Handle buildings differently than roads
+		// Handle buildings and water areas differently than roads
 		if( OSMWay->WayType == FOSMFile::EOSMWayType::Building )
 		{
 			if( AddBuildingForWay( OSMFile, *StreetMap, *OSMWay ) )
+			{
+				// ...
+			}
+		}
+		else if( OSMWay->WayType == FOSMFile::EOSMWayType::WaterArea )
+		{
+			if( AddWaterAreaForWay( OSMFile, *StreetMap, *OSMWay ) )
 			{
 				// ...
 			}

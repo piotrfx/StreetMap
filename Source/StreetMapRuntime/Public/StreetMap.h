@@ -97,6 +97,18 @@ public:
 	UPROPERTY(Category = StreetMap, EditAnywhere, meta = (ClampMin = "0", UIMin = "0"))
 	float BuildingBorderZ;
 
+	/** River thickness */
+	UPROPERTY(Category = StreetMap, EditAnywhere, meta = (ClampMin = "0", UIMin = "0"))
+	float RiverThickness;
+
+	/** River vertex color */
+	UPROPERTY(Category = StreetMap, EditAnywhere)
+	FLinearColor RiverColor;
+
+	/** Water area (pond/lake/reservoir) vertex color */
+	UPROPERTY(Category = StreetMap, EditAnywhere)
+	FLinearColor WaterAreaColor;
+
 	FStreetMapMeshBuildSettings() :
 		RoadOffsetZ(0.0f),
 		bWant3DBuildings(true),
@@ -109,7 +121,10 @@ public:
 		HighwayColor(FLinearColor(0.25f, 0.95f, 0.25f)),
 		BuildingBorderThickness(20.0f),
 		BuildingBorderLinearColor(0.85f, 0.85f, 0.85f),
-		BuildingBorderZ(10.0f)
+		BuildingBorderZ(10.0f),
+		RiverThickness(2000.0f),
+		RiverColor(0.02f, 0.08f, 0.35f),
+		WaterAreaColor(0.03f, 0.12f, 0.45f)
 	{
 	}
 };
@@ -128,7 +143,10 @@ enum EStreetMapRoadType
 	
 	/** Highway */
 	Highway,
-	
+
+	/** River or stream */
+	River,
+
 	/** Other (path, bus route, etc) */
 	Other,
 };
@@ -315,6 +333,30 @@ struct STREETMAPRUNTIME_API FStreetMapBuilding
 };
 
 
+/** A closed water area, e.g. a pond, lake, or reservoir */
+USTRUCT( BlueprintType )
+struct STREETMAPRUNTIME_API FStreetMapWaterArea
+{
+        GENERATED_BODY()
+
+	/** Name of the water area, if known */
+	UPROPERTY( Category=StreetMap, EditAnywhere )
+	FString WaterAreaName;
+
+	/** Polygon points that define the perimeter of the water area */
+	UPROPERTY( Category=StreetMap, EditAnywhere )
+	TArray<FVector2D> WaterAreaPoints;
+
+	/** 2D bounds (min) of this water area's points */
+	UPROPERTY( Category=StreetMap, EditAnywhere )
+	FVector2D BoundsMin = FVector2D::ZeroVector;
+
+	/** 2D bounds (max) of this water area's points */
+	UPROPERTY( Category=StreetMap, EditAnywhere )
+	FVector2D BoundsMax = FVector2D::ZeroVector;
+};
+
+
 /** A loaded street map */
 UCLASS()
 class STREETMAPRUNTIME_API UStreetMap : public UObject
@@ -365,6 +407,18 @@ public:
 		return Buildings;
 	}
 
+	/** Gets all of the water areas (read only) */
+	const TArray<FStreetMapWaterArea>& GetWaterAreas() const
+	{
+		return WaterAreas;
+	}
+
+	/** Gets all of the water areas */
+	TArray<FStreetMapWaterArea>& GetWaterAreas()
+	{
+		return WaterAreas;
+	}
+
 	/** Gets the bounding box of the map */
 	FVector2D GetBoundsMin() const
 	{
@@ -389,6 +443,10 @@ protected:
 	/** List of all buildings on the street map */
 	UPROPERTY( Category=StreetMap, VisibleAnywhere)
 	TArray<FStreetMapBuilding> Buildings;
+
+	/** List of all water areas (ponds/lakes/reservoirs) on the street map */
+	UPROPERTY( Category=StreetMap, VisibleAnywhere)
+	TArray<FStreetMapWaterArea> WaterAreas;
 
 	/** 2D bounds (min) of this map's roads and buildings */
 	UPROPERTY( Category=StreetMap, VisibleAnywhere)

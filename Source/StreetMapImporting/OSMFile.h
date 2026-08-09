@@ -131,9 +131,20 @@ public:
 
 
 		///
+		/// WATER
+		///
+
+		/** A closed water area, e.g. a pond, lake, or reservoir (natural=water, landuse=reservoir) */
+		WaterArea,
+
+		/** A river or stream (waterway=river, waterway=stream) */
+		River,
+
+
+		///
 		/// UNSUPPORTED
-		/// 
-		
+		///
+
 		/** Currently unrecognized type */
 		Other,
 	};
