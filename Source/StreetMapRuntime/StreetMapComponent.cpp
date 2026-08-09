@@ -320,7 +320,94 @@ void UStreetMapComponent::GenerateMesh()
 					}
 				}		
 
-				// Top of building
+				// Top of building: a pitched (gable) roof for residential buildings, a flat cap otherwise.
+				// The gable roof is approximated from an oriented bounding rectangle (aligned to the
+				// footprint's longest edge) rather than the exact polygon, so it may not perfectly
+				// hug very irregular (e.g. L-shaped) footprints -- an acceptable tradeoff given most
+				// OSM house footprints are roughly rectangular.
+				const bool bWantGableRoof = Building.bIsResidential && BuildingFillZ > KINDA_SMALL_NUMBER;
+				if( bWantGableRoof )
+				{
+					// Emits both winding orders for each face, so it renders regardless of which
+					// side is "front" per the engine's culling convention -- simpler and more
+					// robust than trying to compute the correct single winding for every one of
+					// these faces, at the cost of a small amount of extra (harmless) geometry.
+					auto AddQuad = [&]( const FVector3f& P0, const FVector3f& P1, const FVector3f& P2, const FVector3f& P3 )
+					{
+						TempPoints.SetNum( 4, EAllowShrinking::No );
+						TempPoints[0] = P0; TempPoints[1] = P1; TempPoints[2] = P2; TempPoints[3] = P3;
+						TempIndices.SetNum( 12, EAllowShrinking::No );
+						TempIndices[0] = 0; TempIndices[1] = 1; TempIndices[2] = 2;
+						TempIndices[3] = 0; TempIndices[4] = 2; TempIndices[5] = 3;
+						TempIndices[6] = 2; TempIndices[7] = 1; TempIndices[8] = 0;
+						TempIndices[9] = 3; TempIndices[10] = 2; TempIndices[11] = 0;
+						AddTriangles( TempPoints, TempIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
+					};
+					auto AddTri = [&]( const FVector3f& P0, const FVector3f& P1, const FVector3f& P2 )
+					{
+						TempPoints.SetNum( 3, EAllowShrinking::No );
+						TempPoints[0] = P0; TempPoints[1] = P1; TempPoints[2] = P2;
+						TempIndices.SetNum( 6, EAllowShrinking::No );
+						TempIndices[0] = 0; TempIndices[1] = 1; TempIndices[2] = 2;
+						TempIndices[3] = 2; TempIndices[4] = 1; TempIndices[5] = 0;
+						AddTriangles( TempPoints, TempIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
+					};
+
+					// Find the longest edge of the actual footprint polygon and use its direction as
+					// the ridge axis, instead of the world X/Y axes -- most real building footprints
+					// are rotated relative to the map's lat/long grid, and an axis-aligned bounding
+					// box for a rotated rectangle balloons out well past its actual walls.
+					FVector2D RidgeDir( 1.0, 0.0 );
+					{
+						double LongestEdgeLenSq = 0.0;
+						const int32 NumPts = Building.BuildingPoints.Num();
+						for( int32 PointIndex = 0; PointIndex < NumPts; ++PointIndex )
+						{
+							const FVector2D& A = Building.BuildingPoints[ PointIndex ];
+							const FVector2D& B = Building.BuildingPoints[ ( PointIndex + 1 ) % NumPts ];
+							const double EdgeLenSq = FVector2D::DistSquared( A, B );
+							if( EdgeLenSq > LongestEdgeLenSq )
+							{
+								LongestEdgeLenSq = EdgeLenSq;
+								RidgeDir = ( B - A ).GetSafeNormal();
+							}
+						}
+					}
+					const FVector2D PerpDir( -RidgeDir.Y, RidgeDir.X );
+
+					// Project the footprint onto the (RidgeDir, PerpDir) axes to get an oriented
+					// bounding rectangle that hugs a rotated building much more closely than the
+					// axis-aligned BoundsMin/BoundsMax would.
+					double UMin = TNumericLimits<double>::Max(), UMax = TNumericLimits<double>::Lowest();
+					double VMin = TNumericLimits<double>::Max(), VMax = TNumericLimits<double>::Lowest();
+					for( const FVector2D& Point : Building.BuildingPoints )
+					{
+						const double U = FVector2D::DotProduct( Point, RidgeDir );
+						const double V = FVector2D::DotProduct( Point, PerpDir );
+						UMin = FMath::Min( UMin, U ); UMax = FMath::Max( UMax, U );
+						VMin = FMath::Min( VMin, V ); VMax = FMath::Max( VMax, V );
+					}
+					const double VMid = ( VMin + VMax ) * 0.5;
+					const float RidgeZ = BuildingFillZ + FMath::Clamp( 0.35f * (float)( VMax - VMin ), 150.0f, 600.0f );
+
+					auto MakePoint = [&]( double U, double V, float Z ) -> FVector3f
+					{
+						const FVector2D WorldXY = RidgeDir * U + PerpDir * V;
+						return FVector3f( (float)WorldXY.X, (float)WorldXY.Y, Z );
+					};
+
+					AddQuad(
+						MakePoint( UMin, VMin, BuildingFillZ ), MakePoint( UMax, VMin, BuildingFillZ ),
+						MakePoint( UMax, VMid, RidgeZ ), MakePoint( UMin, VMid, RidgeZ ) );
+					AddQuad(
+						MakePoint( UMax, VMax, BuildingFillZ ), MakePoint( UMin, VMax, BuildingFillZ ),
+						MakePoint( UMin, VMid, RidgeZ ), MakePoint( UMax, VMid, RidgeZ ) );
+					AddTri(
+						MakePoint( UMin, VMin, BuildingFillZ ), MakePoint( UMin, VMid, RidgeZ ), MakePoint( UMin, VMax, BuildingFillZ ) );
+					AddTri(
+						MakePoint( UMax, VMax, BuildingFillZ ), MakePoint( UMax, VMid, RidgeZ ), MakePoint( UMax, VMin, BuildingFillZ ) );
+				}
+				else
 				{
 					TempPoints.SetNum( Building.BuildingPoints.Num(), EAllowShrinking::No );
 					for( int32 PointIndex = 0; PointIndex < Building.BuildingPoints.Num(); ++PointIndex )

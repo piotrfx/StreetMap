@@ -166,6 +166,11 @@ public:
 		double Height;
 		int32 BuildingLevels;
 
+		// If true, this building's OSM "building" tag (or a random fallback, when the tag is
+		// missing or generic like "yes") classifies it as residential, and it should get a
+		// pitched roof instead of a flat one.
+		uint8 bIsResidentialBuilding : 1;
+
 		// If true, way is only traversable in the order the nodes are listed in the Nodes list
 		uint8 bIsOneWay : 1;
 	};

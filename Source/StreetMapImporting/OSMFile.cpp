@@ -103,6 +103,7 @@ bool FOSMFile::ProcessElement( const TCHAR* ElementName, const TCHAR* ElementDat
 			CurrentWayInfo->Ref.Empty();
 			CurrentWayInfo->WayType = EOSMWayType::Other;
 			CurrentWayInfo->Height = 0.0;
+			CurrentWayInfo->bIsResidentialBuilding = false;
 			CurrentWayInfo->bIsOneWay = false;
 
 			// @todo: We're currently ignoring the "visible" tag on ways, which means that roads will always
@@ -325,13 +326,51 @@ bool FOSMFile::ProcessAttribute( const TCHAR* AttributeName, const TCHAR* Attrib
 			{
 				CurrentWayInfo->WayType = EOSMWayType::Building;
 
-				if( !FCString::Stricmp( AttributeValue, TEXT( "yes" ) ) )
+				// Classify the building as residential (pitched roof) or not (flat roof) from
+				// OSM's building=* value.  See http://wiki.openstreetmap.org/wiki/Key:building
+				static const TCHAR* ResidentialBuildingTypes[] =
 				{
-					CurrentWayInfo->WayType = EOSMWayType::Building;
+					TEXT( "house" ), TEXT( "residential" ), TEXT( "apartments" ), TEXT( "detached" ),
+					TEXT( "semidetached_house" ), TEXT( "terrace" ), TEXT( "bungalow" ),
+					TEXT( "dormitory" ), TEXT( "static_caravan" ), TEXT( "farm" ), TEXT( "cabin" )
+				};
+				static const TCHAR* NonResidentialBuildingTypes[] =
+				{
+					TEXT( "commercial" ), TEXT( "retail" ), TEXT( "office" ), TEXT( "industrial" ),
+					TEXT( "warehouse" ), TEXT( "supermarket" ), TEXT( "church" ), TEXT( "public" ),
+					TEXT( "civic" ), TEXT( "school" ), TEXT( "hospital" ), TEXT( "hotel" ),
+					TEXT( "garage" ), TEXT( "garages" ), TEXT( "shed" ), TEXT( "roof" ),
+					TEXT( "construction" ), TEXT( "parking" )
+				};
+
+				bool bMatchedKnownType = false;
+				for( const TCHAR* ResidentialType : ResidentialBuildingTypes )
+				{
+					if( !FCString::Stricmp( AttributeValue, ResidentialType ) )
+					{
+						CurrentWayInfo->bIsResidentialBuilding = true;
+						bMatchedKnownType = true;
+						break;
+					}
 				}
-				else
+				if( !bMatchedKnownType )
 				{
-					// Other type that we don't recognize yet.  See http://wiki.openstreetmap.org/wiki/Key:building
+					for( const TCHAR* NonResidentialType : NonResidentialBuildingTypes )
+					{
+						if( !FCString::Stricmp( AttributeValue, NonResidentialType ) )
+						{
+							CurrentWayInfo->bIsResidentialBuilding = false;
+							bMatchedKnownType = true;
+							break;
+						}
+					}
+				}
+				if( !bMatchedKnownType )
+				{
+					// Generic "yes" or an unrecognized subtype -- no real signal either way, so
+					// randomize it (skewed slightly toward non-residential, appropriate for a
+					// town centre) rather than defaulting every unknown building to flat roofs.
+					CurrentWayInfo->bIsResidentialBuilding = FMath::FRand() < 0.45f;
 				}
 			}
 			else if( !FCString::Stricmp( CurrentWayTagKey, TEXT( "height" ) ) )

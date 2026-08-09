@@ -299,6 +299,10 @@ struct STREETMAPRUNTIME_API FStreetMapBuilding
 	UPROPERTY(Category = StreetMap, EditAnywhere)
 	int BuildingLevels = 0;
 
+	/** Whether this building is residential (gets a pitched roof) as opposed to commercial/other (flat roof) */
+	UPROPERTY(Category = StreetMap, EditAnywhere)
+	bool bIsResidential = false;
+
 	// @todo: Performance: Bounding information could be computed at load time if we want to avoid the memory cost of storing it
 
 	/** 2D bounds (min) of this building's points */
