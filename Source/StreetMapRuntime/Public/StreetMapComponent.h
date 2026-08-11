@@ -138,6 +138,9 @@ protected:
 	/** Adds a 2D line to the raw mesh */
 	void AddThick2DLine(const FVector2f Start, const FVector2f End, const float Z, const float Thickness, const FColor& StartColor, const FColor& EndColor, FBox3f& MeshBoundingBox);
 
+	/** Fills the wedge-shaped gap/overlap left between two AddThick2DLine segments where they meet at an angle, so bends read as fluent rather than faceted */
+	void AddRoadJoin(const FVector2f JointPoint, const FVector2f PrevDirection, const FVector2f NextDirection, const float Z, const float Thickness, const FColor& Color, FBox3f& MeshBoundingBox);
+
 	/** Adds 3D triangles to the raw mesh */
 	void AddTriangles(const TArray<FVector3f>& Points, const TArray<int32>& PointIndices, const FVector3f& ForwardVector, const FVector3f& UpVector, const FColor& Color, FBox3f& MeshBoundingBox);
 
@@ -150,6 +153,13 @@ protected:
 
 	UPROPERTY(EditAnywhere, Category = "StreetMap")
 		FStreetMapMeshBuildSettings MeshBuildSettings;
+
+	/** Which OSM layer this component should generate. Leave as "All" for the original combined
+	 *  mesh, or set to Roads/Buildings/Water to make this component render only that layer -- pair
+	 *  multiple components (or actors), each pointed at the same StreetMap asset with a different
+	 *  MeshLayer, to get independently-selectable, independently-materialed layers. */
+	UPROPERTY(EditAnywhere, Category = "StreetMap")
+		EStreetMapMeshLayer MeshLayer = EStreetMapMeshLayer::All;
 
 	UPROPERTY(EditAnywhere, Category = "StreetMap")
 		FStreetMapCollisionSettings CollisionSettings;

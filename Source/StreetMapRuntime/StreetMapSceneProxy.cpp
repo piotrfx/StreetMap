@@ -148,8 +148,14 @@ void FStreetMapSceneProxy::DrawStaticElements( FStaticPrimitiveDrawInterface* PD
 	{
 		const float ScreenSize = 1.0f;
 
+		// Use the component's actually-assigned material (falls back to the plugin default
+		// inside MakeMeshBatch only if none is set) -- passing nullptr here always renders
+		// with the default material regardless of what's assigned, and since that default
+		// isn't in GetUsedMaterials(), the engine silently drops the whole mesh batch.
+		FMaterialRenderProxy* MaterialProxy = MaterialInterface ? MaterialInterface->GetRenderProxy() : nullptr;
+
 		FMeshBatch MeshBatch;
-		MakeMeshBatch(MeshBatch, nullptr, false);
+		MakeMeshBatch(MeshBatch, MaterialProxy, false);
 		PDI->DrawMesh( MeshBatch, ScreenSize );
 	}
 }
@@ -190,6 +196,11 @@ void FStreetMapSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 					FColoredMaterialRenderProxy* NewCollisionMaterialProxy = new FColoredMaterialRenderProxy(GEngine->ShadedLevelColorationUnlitMaterial->GetRenderProxy(), FColor::Cyan);
 					Collector.RegisterOneFrameMaterialProxy(NewCollisionMaterialProxy);
 					MaterialProxy = NewCollisionMaterialProxy;
+				}
+				if (MaterialProxy == nullptr)
+				{
+					// Fall back to the component's actually-assigned material -- see comment in DrawStaticElements.
+					MaterialProxy = MaterialInterface ? MaterialInterface->GetRenderProxy() : nullptr;
 				}
 
 				// Draw the mesh!

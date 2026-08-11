@@ -256,6 +256,16 @@ void UStreetMapComponent::GenerateMesh()
 
 		for( const auto& Road : Roads )
 		{
+			// Rivers are drawn from the Roads array but conceptually belong to the Water layer.
+			const bool bIsRiver = ( Road.RoadType == EStreetMapRoadType::River );
+			const bool bWantThisRoad = ( MeshLayer == EStreetMapMeshLayer::All )
+				|| ( bIsRiver && MeshLayer == EStreetMapMeshLayer::Water )
+				|| ( !bIsRiver && MeshLayer == EStreetMapMeshLayer::Roads );
+			if( !bWantThisRoad )
+			{
+				continue;
+			}
+
 			float RoadThickness = StreetThickness;
 			FColor RoadColor = StreetColor;
 			switch( Road.RoadType )
@@ -286,7 +296,7 @@ void UStreetMapComponent::GenerateMesh()
 			
 			for( int32 PointIndex = 0; PointIndex < Road.RoadPoints.Num() - 1; ++PointIndex )
 			{
-				AddThick2DLine( 
+				AddThick2DLine(
 					FVector2f(Road.RoadPoints[ PointIndex ]),
 					FVector2f(Road.RoadPoints[ PointIndex + 1 ]),
 					RoadZ,
@@ -295,12 +305,27 @@ void UStreetMapComponent::GenerateMesh()
 					RoadColor,
 					MeshBoundingBox );
 			}
+
+			// Fill the gap/overlap left at each interior bend between two independently-capped segments
+			// (see AddRoadJoin) so the road reads as a fluent line rather than a chain of angled rectangles.
+			for( int32 PointIndex = 1; PointIndex < Road.RoadPoints.Num() - 1; ++PointIndex )
+			{
+				const FVector2f PrevPoint( Road.RoadPoints[ PointIndex - 1 ] );
+				const FVector2f JointPoint( Road.RoadPoints[ PointIndex ] );
+				const FVector2f NextPoint( Road.RoadPoints[ PointIndex + 1 ] );
+
+				const FVector2f PrevDirection = ( JointPoint - PrevPoint ).GetSafeNormal();
+				const FVector2f NextDirection = ( NextPoint - JointPoint ).GetSafeNormal();
+
+				AddRoadJoin( JointPoint, PrevDirection, NextDirection, RoadZ, RoadThickness, RoadColor, MeshBoundingBox );
+			}
 		}
 		
 		TArray< int32 > TempIndices;
 		TArray< int32 > TriangulatedVertexIndices;
 		TArray< FVector3f > TempPoints;
-		for( int32 BuildingIndex = 0; BuildingIndex < Buildings.Num(); ++BuildingIndex )
+		const bool bWantBuildings = ( MeshLayer == EStreetMapMeshLayer::All || MeshLayer == EStreetMapMeshLayer::Buildings );
+		for( int32 BuildingIndex = 0; bWantBuildings && BuildingIndex < Buildings.Num(); ++BuildingIndex )
 		{
 			const auto& Building = Buildings[ BuildingIndex ];
 
@@ -531,7 +556,8 @@ void UStreetMapComponent::GenerateMesh()
 
 		// Water areas (ponds, lakes, reservoirs) -- flat filled polygons, same triangulation
 		// approach as the building flat cap, just at ground/road level with no walls.
-		for( int32 WaterAreaIndex = 0; WaterAreaIndex < WaterAreas.Num(); ++WaterAreaIndex )
+		const bool bWantWater = ( MeshLayer == EStreetMapMeshLayer::All || MeshLayer == EStreetMapMeshLayer::Water );
+		for( int32 WaterAreaIndex = 0; bWantWater && WaterAreaIndex < WaterAreas.Num(); ++WaterAreaIndex )
 		{
 			const auto& WaterArea = WaterAreas[ WaterAreaIndex ];
 
@@ -717,6 +743,81 @@ void UStreetMapComponent::AddThick2DLine( const FVector2f Start, const FVector2f
 	Indices.Add( TopRightVertexIndex );
 	Indices.Add( TopLeftVertexIndex );
 };
+
+
+void UStreetMapComponent::AddRoadJoin( const FVector2f JointPoint, const FVector2f PrevDirection, const FVector2f NextDirection, const float Z, const float Thickness, const FColor& Color, FBox3f& MeshBoundingBox )
+{
+	// Each road segment is an independent butt-capped quad (see AddThick2DLine), so at a bend the
+	// trailing edge of one segment and the leading edge of the next don't line up: the outer side of
+	// the turn is left with a triangular gap (reads as two angled rectangles with no fluent connection),
+	// and the inner side overlaps. This fills the gap with a small fan centered on the shared point,
+	// swept from the previous segment's edge to the next segment's edge, on both sides of the centerline
+	// (the "inner" fan just harmlessly overlaps existing geometry). The wider the turn angle, the bigger
+	// the gap this closes -- exactly the case that looked worst.
+	const float HalfThickness = Thickness * 0.5f;
+	const FVector2f PrevRight( -PrevDirection.Y, PrevDirection.X );
+	const FVector2f NextRight( -NextDirection.Y, NextDirection.X );
+
+	// Nearly-straight joints leave no visible gap; skip them.
+	if( FVector2f::DotProduct( PrevRight, NextRight ) > 0.9999f )
+	{
+		return;
+	}
+
+	const int32 CenterVertexIndex = Vertices.Num();
+	FStreetMapVertex& CenterVertex = *new( Vertices )FStreetMapVertex();
+	CenterVertex.Position = FVector3f( JointPoint, Z );
+	CenterVertex.TextureCoordinate = FVector2f( 0.5f, 0.5f );
+	CenterVertex.TangentX = FVector3f( PrevDirection, 0.0f );
+	CenterVertex.TangentZ = FVector3f::UpVector;
+	CenterVertex.Color = Color;
+	MeshBoundingBox += CenterVertex.Position;
+
+	const int32 NumFanSegments = 6;
+
+	// Builds a fan of triangles sweeping from StartRight to EndRight (shortest arc), at HalfThickness
+	// from JointPoint. Emits every triangle with both winding orders since the correct one depends on
+	// turn direction and isn't worth hand-deriving per case -- same double-sided approach used for the
+	// pitched-roof faces, see the roof-feature memory.
+	auto BuildFan = [&]( const FVector2f& StartRight, const FVector2f& EndRight )
+	{
+		const float StartAngle = FMath::Atan2( StartRight.Y, StartRight.X );
+		const float EndAngle = FMath::Atan2( EndRight.Y, EndRight.X );
+		const float DeltaAngle = FMath::FindDeltaAngleRadians( StartAngle, EndAngle );
+
+		int32 PrevVertexIndex = INDEX_NONE;
+		for( int32 Step = 0; Step <= NumFanSegments; ++Step )
+		{
+			const float Alpha = (float)Step / (float)NumFanSegments;
+			const float Angle = StartAngle + DeltaAngle * Alpha;
+			const FVector2f Offset( FMath::Cos( Angle ), FMath::Sin( Angle ) );
+
+			const int32 VertexIndex = Vertices.Num();
+			FStreetMapVertex& Vertex = *new( Vertices )FStreetMapVertex();
+			Vertex.Position = FVector3f( JointPoint + Offset * HalfThickness, Z );
+			Vertex.TextureCoordinate = FVector2f( 0.0f, 0.0f );
+			Vertex.TangentX = FVector3f( PrevDirection, 0.0f );
+			Vertex.TangentZ = FVector3f::UpVector;
+			Vertex.Color = Color;
+			MeshBoundingBox += Vertex.Position;
+
+			if( PrevVertexIndex != INDEX_NONE )
+			{
+				Indices.Add( CenterVertexIndex );
+				Indices.Add( PrevVertexIndex );
+				Indices.Add( VertexIndex );
+
+				Indices.Add( CenterVertexIndex );
+				Indices.Add( VertexIndex );
+				Indices.Add( PrevVertexIndex );
+			}
+			PrevVertexIndex = VertexIndex;
+		}
+	};
+
+	BuildFan( PrevRight, NextRight );
+	BuildFan( -PrevRight, -NextRight );
+}
 
 
 void UStreetMapComponent::AddTriangles( const TArray<FVector3f>& Points, const TArray<int32>& PointIndices, const FVector3f& ForwardVector, const FVector3f& UpVector, const FColor& Color, FBox3f& MeshBoundingBox )

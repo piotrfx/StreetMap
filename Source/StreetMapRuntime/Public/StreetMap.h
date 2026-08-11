@@ -152,6 +152,26 @@ enum EStreetMapRoadType
 };
 
 
+/** Restricts a UStreetMapComponent's generated mesh to a single kind of OSM geometry, so roads,
+ *  buildings, and water can be split across independent, separately-selectable components/actors
+ *  that each get their own material -- instead of one combined mesh for the whole map. */
+UENUM( BlueprintType )
+enum class EStreetMapMeshLayer : uint8
+{
+	/** Generate everything (original behavior: roads + buildings + water in one mesh) */
+	All,
+
+	/** Roads and highways only (rivers are considered part of the Water layer, not Roads) */
+	Roads,
+
+	/** Buildings only (including building borders) */
+	Buildings,
+
+	/** Rivers and water areas (ponds/lakes/reservoirs) only */
+	Water,
+};
+
+
 /** A road */
 USTRUCT( BlueprintType )
 struct STREETMAPRUNTIME_API FStreetMapRoad
