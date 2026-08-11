@@ -141,8 +141,8 @@ protected:
 	/** Fills the wedge-shaped gap/overlap left between two AddThick2DLine segments where they meet at an angle, so bends read as fluent rather than faceted */
 	void AddRoadJoin(const FVector2f JointPoint, const FVector2f PrevDirection, const FVector2f NextDirection, const float Z, const float Thickness, const FColor& Color, FBox3f& MeshBoundingBox);
 
-	/** Adds 3D triangles to the raw mesh */
-	void AddTriangles(const TArray<FVector3f>& Points, const TArray<int32>& PointIndices, const FVector3f& ForwardVector, const FVector3f& UpVector, const FColor& Color, FBox3f& MeshBoundingBox);
+	/** Adds 3D triangles to the raw mesh. UVs must have one entry per Points entry (parallel arrays). */
+	void AddTriangles(const TArray<FVector3f>& Points, const TArray<FVector2f>& UVs, const TArray<int32>& PointIndices, const FVector3f& ForwardVector, const FVector3f& UpVector, const FColor& Color, FBox3f& MeshBoundingBox);
 
 
 protected:

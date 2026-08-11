@@ -240,6 +240,32 @@ void UStreetMapComponent::GenerateMesh()
 	/////////////////////////////////////////////////////////
 
 
+	// Flat/horizontal polygons (building caps, water areas) don't have a natural per-edge UV like a road
+	// or wall quad does, so approximate one by normalizing each point's XY position against the polygon's
+	// own XY bounding box -- gives a full 0-1 UV spread across the shape instead of a single fixed texel,
+	// so a tiled material shows real texture detail rather than reading as a flat solid color.
+	auto ComputeXYBoundingBoxUVs = []( const TArray<FVector3f>& Points ) -> TArray<FVector2f>
+	{
+		FVector2D MinP( TNumericLimits<double>::Max(), TNumericLimits<double>::Max() );
+		FVector2D MaxP( TNumericLimits<double>::Lowest(), TNumericLimits<double>::Lowest() );
+		for( const FVector3f& Point : Points )
+		{
+			MinP.X = FMath::Min( MinP.X, (double)Point.X ); MinP.Y = FMath::Min( MinP.Y, (double)Point.Y );
+			MaxP.X = FMath::Max( MaxP.X, (double)Point.X ); MaxP.Y = FMath::Max( MaxP.Y, (double)Point.Y );
+		}
+		const FVector2D Extent = MaxP - MinP;
+
+		TArray<FVector2f> UVs;
+		UVs.Reserve( Points.Num() );
+		for( const FVector3f& Point : Points )
+		{
+			const float U = Extent.X > KINDA_SMALL_NUMBER ? (float)( ( (double)Point.X - MinP.X ) / Extent.X ) : 0.0f;
+			const float V = Extent.Y > KINDA_SMALL_NUMBER ? (float)( ( (double)Point.Y - MinP.Y ) / Extent.Y ) : 0.0f;
+			UVs.Add( FVector2f( U, V ) );
+		}
+		return UVs;
+	};
+
 	CachedLocalBounds = FBox( ForceInit );
 	Vertices.Reset();
 	Indices.Reset();
@@ -324,10 +350,32 @@ void UStreetMapComponent::GenerateMesh()
 		TArray< int32 > TempIndices;
 		TArray< int32 > TriangulatedVertexIndices;
 		TArray< FVector3f > TempPoints;
-		const bool bWantBuildings = ( MeshLayer == EStreetMapMeshLayer::All || MeshLayer == EStreetMapMeshLayer::Buildings );
+		TArray< FVector2f > TempUVs;
+		const bool bWantBuildings = ( MeshLayer == EStreetMapMeshLayer::All
+			|| MeshLayer == EStreetMapMeshLayer::Buildings
+			|| MeshLayer == EStreetMapMeshLayer::BuildingsResidential
+			|| MeshLayer == EStreetMapMeshLayer::BuildingsCommercial
+			|| MeshLayer == EStreetMapMeshLayer::BuildingsResidentialWalls
+			|| MeshLayer == EStreetMapMeshLayer::BuildingsResidentialRoof );
+		// Roof-only and walls-only layers are both restricted to residential buildings (only they get a
+		// gable roof at all -- see bWantGableRoof below), so they reuse the same residential-only filter.
+		const bool bLayerIsResidentialOnly = ( MeshLayer == EStreetMapMeshLayer::BuildingsResidential
+			|| MeshLayer == EStreetMapMeshLayer::BuildingsResidentialWalls
+			|| MeshLayer == EStreetMapMeshLayer::BuildingsResidentialRoof );
+		// Within a residential-only layer, walls and roof can additionally be split into their own
+		// components/actors so each can carry a different material (e.g. brick walls, tiled roof).
+		const bool bWantRoofGeometry = ( MeshLayer != EStreetMapMeshLayer::BuildingsResidentialWalls );
+		const bool bWantWallGeometry = ( MeshLayer != EStreetMapMeshLayer::BuildingsResidentialRoof );
 		for( int32 BuildingIndex = 0; bWantBuildings && BuildingIndex < Buildings.Num(); ++BuildingIndex )
 		{
 			const auto& Building = Buildings[ BuildingIndex ];
+
+			// When split by residential/commercial, skip buildings that don't belong to this layer.
+			if( ( bLayerIsResidentialOnly && !Building.bIsResidential )
+				|| ( MeshLayer == EStreetMapMeshLayer::BuildingsCommercial && Building.bIsResidential ) )
+			{
+				continue;
+			}
 
 			// Building mesh (or filled area, if the building has no height)
 
@@ -360,7 +408,7 @@ void UStreetMapComponent::GenerateMesh()
 				// hug very irregular (e.g. L-shaped) footprints -- an acceptable tradeoff given most
 				// OSM house footprints are roughly rectangular.
 				const bool bWantGableRoof = Building.bIsResidential && BuildingFillZ > KINDA_SMALL_NUMBER;
-				if( bWantGableRoof )
+				if( bWantGableRoof && bWantRoofGeometry )
 				{
 					// Emits both winding orders for each face, so it renders regardless of which
 					// side is "front" per the engine's culling convention -- simpler and more
@@ -370,21 +418,25 @@ void UStreetMapComponent::GenerateMesh()
 					{
 						TempPoints.SetNum( 4, EAllowShrinking::No );
 						TempPoints[0] = P0; TempPoints[1] = P1; TempPoints[2] = P2; TempPoints[3] = P3;
+						TempUVs.SetNum( 4, EAllowShrinking::No );
+						TempUVs[0] = FVector2f(0,0); TempUVs[1] = FVector2f(1,0); TempUVs[2] = FVector2f(1,1); TempUVs[3] = FVector2f(0,1);
 						TempIndices.SetNum( 12, EAllowShrinking::No );
 						TempIndices[0] = 0; TempIndices[1] = 1; TempIndices[2] = 2;
 						TempIndices[3] = 0; TempIndices[4] = 2; TempIndices[5] = 3;
 						TempIndices[6] = 2; TempIndices[7] = 1; TempIndices[8] = 0;
 						TempIndices[9] = 3; TempIndices[10] = 2; TempIndices[11] = 0;
-						AddTriangles( TempPoints, TempIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
+						AddTriangles( TempPoints, TempUVs, TempIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
 					};
 					auto AddTri = [&]( const FVector3f& P0, const FVector3f& P1, const FVector3f& P2 )
 					{
 						TempPoints.SetNum( 3, EAllowShrinking::No );
 						TempPoints[0] = P0; TempPoints[1] = P1; TempPoints[2] = P2;
+						TempUVs.SetNum( 3, EAllowShrinking::No );
+						TempUVs[0] = FVector2f(0,0); TempUVs[1] = FVector2f(1,0); TempUVs[2] = FVector2f(0.5f,1);
 						TempIndices.SetNum( 6, EAllowShrinking::No );
 						TempIndices[0] = 0; TempIndices[1] = 1; TempIndices[2] = 2;
 						TempIndices[3] = 2; TempIndices[4] = 1; TempIndices[5] = 0;
-						AddTriangles( TempPoints, TempIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
+						AddTriangles( TempPoints, TempUVs, TempIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
 					};
 
 					// Find the longest edge of the actual footprint polygon and use its direction as
@@ -441,17 +493,21 @@ void UStreetMapComponent::GenerateMesh()
 					AddTri(
 						MakePoint( UMax, VMax, BuildingFillZ ), MakePoint( UMax, VMid, RidgeZ ), MakePoint( UMax, VMin, BuildingFillZ ) );
 				}
-				else
+				else if( bWantRoofGeometry )
 				{
+					// Flat cap (non-residential buildings, or a residential-roof layer's fallback for a
+					// zero-height building that never got a gable roof in the first place).
 					TempPoints.SetNum( Building.BuildingPoints.Num(), EAllowShrinking::No );
 					for( int32 PointIndex = 0; PointIndex < Building.BuildingPoints.Num(); ++PointIndex )
 					{
 						TempPoints[ PointIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ ( Building.BuildingPoints.Num() - PointIndex ) - 1 ]), BuildingFillZ );
 					}
-					AddTriangles( TempPoints, TriangulatedVertexIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
+					AddTriangles( TempPoints, ComputeXYBoundingBoxUVs( TempPoints ), TriangulatedVertexIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
 				}
+				// else: this is a walls-only layer -- deliberately skip the top of the building, it's
+				// rendered by a separate roof-only component/actor instead (see bWantRoofGeometry above).
 
-				if( bWant3DBuildings && (Building.Height > KINDA_SMALL_NUMBER || Building.BuildingLevels > 0) )
+				if( bWantWallGeometry && bWant3DBuildings && (Building.Height > KINDA_SMALL_NUMBER || Building.BuildingLevels > 0) )
 				{
 					// NOTE: Lit buildings can't share vertices beyond quads (all quads have their own face normals), so this uses a lot more geometry!
 					if( bWantLitBuildings )
@@ -475,6 +531,14 @@ void UStreetMapComponent::GenerateMesh()
 							const int32 BottomLeftVertexIndex = 3;
 							TempPoints[ BottomLeftVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? RightPointIndex : LeftPointIndex ]), 0.0f );
 
+							// Simple per-edge 0-1 UV (same scheme as AddThick2DLine for roads): U runs across
+							// the edge, V runs up the wall height. Not seamless with neighboring edges, but
+							// gives every wall quad real texture variation instead of one flat sampled texel.
+							TempUVs.SetNum( 4, EAllowShrinking::No );
+							TempUVs[ TopLeftVertexIndex ] = FVector2f( 0.0f, 1.0f );
+							TempUVs[ TopRightVertexIndex ] = FVector2f( 1.0f, 1.0f );
+							TempUVs[ BottomRightVertexIndex ] = FVector2f( 1.0f, 0.0f );
+							TempUVs[ BottomLeftVertexIndex ] = FVector2f( 0.0f, 0.0f );
 
 							TempIndices.SetNum( 6, EAllowShrinking::No );
 
@@ -489,7 +553,7 @@ void UStreetMapComponent::GenerateMesh()
 							const FVector3f FaceNormal = FVector3f::CrossProduct( ( TempPoints[ 0 ] - TempPoints[ 2 ] ).GetSafeNormal(), ( TempPoints[ 0 ] - TempPoints[ 1 ] ).GetSafeNormal() );
 							const FVector3f ForwardVector = FVector3f::UpVector;
 							const FVector3f UpVector = FaceNormal;
-							AddTriangles( TempPoints, TempIndices, ForwardVector, UpVector, BuildingFillColor, MeshBoundingBox );
+							AddTriangles( TempPoints, TempUVs, TempIndices, ForwardVector, UpVector, BuildingFillColor, MeshBoundingBox );
 						}
 					}
 					else
@@ -569,7 +633,7 @@ void UStreetMapComponent::GenerateMesh()
 				{
 					TempPoints[ PointIndex ] = FVector3f( FVector2f(WaterArea.WaterAreaPoints[ ( WaterArea.WaterAreaPoints.Num() - PointIndex ) - 1 ]), RoadZ );
 				}
-				AddTriangles( TempPoints, TriangulatedVertexIndices, FVector3f::ForwardVector, FVector3f::UpVector, WaterAreaColor, MeshBoundingBox );
+				AddTriangles( TempPoints, ComputeXYBoundingBoxUVs( TempPoints ), TriangulatedVertexIndices, FVector3f::ForwardVector, FVector3f::UpVector, WaterAreaColor, MeshBoundingBox );
 			}
 		}
 
@@ -820,15 +884,15 @@ void UStreetMapComponent::AddRoadJoin( const FVector2f JointPoint, const FVector
 }
 
 
-void UStreetMapComponent::AddTriangles( const TArray<FVector3f>& Points, const TArray<int32>& PointIndices, const FVector3f& ForwardVector, const FVector3f& UpVector, const FColor& Color, FBox3f& MeshBoundingBox )
+void UStreetMapComponent::AddTriangles( const TArray<FVector3f>& Points, const TArray<FVector2f>& UVs, const TArray<int32>& PointIndices, const FVector3f& ForwardVector, const FVector3f& UpVector, const FColor& Color, FBox3f& MeshBoundingBox )
 {
 	const int32 FirstVertexIndex = Vertices.Num();
 
-	for( FVector3f Point : Points )
+	for( int32 PointNum = 0; PointNum < Points.Num(); ++PointNum )
 	{
 		FStreetMapVertex& NewVertex = *new( Vertices )FStreetMapVertex();
-		NewVertex.Position = Point;
-		NewVertex.TextureCoordinate = FVector2f( 0.0f, 0.0f );	// NOTE: We're not using texture coordinates for anything yet
+		NewVertex.Position = Points[ PointNum ];
+		NewVertex.TextureCoordinate = UVs.IsValidIndex( PointNum ) ? UVs[ PointNum ] : FVector2f( 0.0f, 0.0f );
 		NewVertex.TangentX = ForwardVector;
 		NewVertex.TangentZ = UpVector;
 		NewVertex.Color = Color;

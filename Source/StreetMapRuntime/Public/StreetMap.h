@@ -164,8 +164,20 @@ enum class EStreetMapMeshLayer : uint8
 	/** Roads and highways only (rivers are considered part of the Water layer, not Roads) */
 	Roads,
 
-	/** Buildings only (including building borders) */
+	/** Buildings only (including building borders), both residential and commercial */
 	Buildings,
+
+	/** Residential/domestic buildings only (OSM building=house/terrace/apartments/etc, see FStreetMapBuilding::bIsResidential) */
+	BuildingsResidential,
+
+	/** Non-residential/commercial buildings only (OSM building=commercial/retail/office/etc) */
+	BuildingsCommercial,
+
+	/** Residential buildings' walls only (no roof/cap) -- pair with BuildingsResidentialRoof for a separately-materialed roof */
+	BuildingsResidentialWalls,
+
+	/** Residential buildings' pitched roof only, no walls -- pairs with BuildingsResidentialWalls */
+	BuildingsResidentialRoof,
 
 	/** Rivers and water areas (ponds/lakes/reservoirs) only */
 	Water,

@@ -5,6 +5,7 @@
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 #include "StreetMapComponentDetails.h"
+#include "StreetMapBuildingDetailsComponentDetails.h"
 #include "StreetMapStyle.h"
 
 class FStreetMapImportingModule : public IModuleInterface
@@ -37,6 +38,7 @@ void FStreetMapImportingModule::StartupModule()
 	// Register StreetMapComponent Detail Customization
 	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	PropertyModule.RegisterCustomClassLayout("StreetMapComponent", FOnGetDetailCustomizationInstance::CreateStatic(&FStreetMapComponentDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("StreetMapBuildingDetailsComponent", FOnGetDetailCustomizationInstance::CreateStatic(&FStreetMapBuildingDetailsComponentDetails::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
 }
 
@@ -58,6 +60,7 @@ void FStreetMapImportingModule::ShutdownModule()
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomClassLayout("StreetMapComponent");
+		PropertyModule.UnregisterCustomClassLayout("StreetMapBuildingDetailsComponent");
 		PropertyModule.NotifyCustomizationModuleChanged();
 	}
 }
