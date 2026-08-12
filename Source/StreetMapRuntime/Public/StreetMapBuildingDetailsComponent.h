@@ -48,29 +48,39 @@ public:
 	UPROPERTY(EditAnywhere, Category = "StreetMap")
 	bool bResidentialOnly = true;
 
-	/** Horizontal distance between window instances along a wall edge. */
+	/** Width of one house's frontage, used to subdivide the building's front wall into repeating
+	 *  house-sized segments -- a single building polygon often represents a whole terrace row sharing
+	 *  one wall (confirmed by the roof generator: it draws exactly one gable per building record, so
+	 *  multiple visible roof peaks along a wall mean multiple actual houses), not a single house. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
-	float WindowSpacing = 300.0f;
+	float HouseWidth = 600.0f;
 
-	/** Minimum gap kept between a window instance and either end (corner) of its wall edge. */
+	/** Distance from a house segment's center to each flanking window. Each side is only used if it
+	 *  clears CornerMargin from that house segment's own boundaries (not the whole wall's). */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
+	float WindowSpacing = 150.0f;
+
+	/** Minimum gap kept between a window instance and either end (corner) of its own house segment. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
 	float CornerMargin = 100.0f;
 
-	/** Wall edges shorter than this get no windows at all -- avoids cramming instances onto tiny segments. */
+	/** A house segment must be at least this wide to get any windows at all -- avoids cramming instances onto a tiny frontage. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
 	float MinEdgeLengthForWindows = 250.0f;
 
-	/** Height of a window instance above its floor's base Z. */
+	/** Height of a window instance above the building's base Z. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
 	float WindowSillHeightOffset = 100.0f;
 
-	/** Vertical height of one building floor/level. Should match the walls/roof component's BuildingLevelFloorFactor to keep windows lined up with the actual floors. */
+	/** Height of a door instance above the building's base Z. DoorMesh is documented as pivoting at
+	 *  its own base (ground level), so this is normally 0 -- only needed as a correction if a stand-in
+	 *  mesh with a different (e.g. centered) pivot is assigned instead of a real door asset. */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
+	float DoorSillHeightOffset = 0.0f;
+
+	/** Used only as a per-level height when deriving a building's total height from BuildingLevels (see FStreetMapBuilding::Height/BuildingLevels). Should match the walls/roof component's BuildingLevelFloorFactor. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
 	float FloorHeight = 300.0f;
-
-	/** Fraction (0-1) of window slots that get randomly skipped, for a less uniform look. Deterministic per slot, not re-rolled between generations. */
-	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning", meta = (ClampMin = "0", ClampMax = "1"))
-	float WindowSkipProbability = 0.15f;
 
 	/** Uniform scale applied to each window instance, on top of WindowMesh's own size. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
@@ -80,11 +90,35 @@ public:
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
 	float DoorMeshScale = 1.0f;
 
-	/** Half-width of the span kept clear of window instances around a placed door, since the door's
-	 *  real mesh width/orientation isn't known until an asset is assigned -- simpler and safer than
-	 *  guessing which axis of DoorMesh's bounds corresponds to width after rotation. */
+	/** Extra yaw applied on top of the computed outward-facing rotation for windows, to correct for
+	 *  WindowMesh's actual front axis not matching the assumed local +X (e.g. 90 if the mesh really
+	 *  faces +Y). Tune this directly and regenerate -- no recompile needed. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
-	float DoorClearance = 120.0f;
+	float WindowRotationOffsetYaw = 0.0f;
+
+	/** Extra roll applied on top of the computed outward-facing rotation for windows -- corrects for
+	 *  WindowMesh's authored "up" axis not actually being local +Z (yaw alone can only change which
+	 *  compass direction the mesh faces, it can't fix a mesh that's twisted around its own facing axis;
+	 *  that symptom looks like one edge of the window sitting proud of the wall and the opposite edge
+	 *  sunk into it, identically on every instance regardless of which wall it's on). */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
+	float WindowRotationOffsetRoll = 0.0f;
+
+	/** Extra pitch applied on top of the computed outward-facing rotation for windows. See WindowRotationOffsetRoll. */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
+	float WindowRotationOffsetPitch = 0.0f;
+
+	/** Same as WindowRotationOffsetYaw, but for DoorMesh. */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
+	float DoorRotationOffsetYaw = 0.0f;
+
+	/** Same as WindowRotationOffsetRoll, but for DoorMesh. */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
+	float DoorRotationOffsetRoll = 0.0f;
+
+	/** Same as WindowRotationOffsetPitch, but for DoorMesh. */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Tuning")
+	float DoorRotationOffsetPitch = 0.0f;
 
 	/** Clears and repopulates the window/door instance components from the current StreetMap data and tunables. */
 	UFUNCTION(CallInEditor, Category = "StreetMap")
