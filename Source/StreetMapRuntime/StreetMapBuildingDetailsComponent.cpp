@@ -102,6 +102,20 @@ void UStreetMapBuildingDetailsComponent::GenerateBuildingDetails()
 	ALandscapeProxy* TerrainLandscapePtr = TerrainLandscape.LoadSynchronous();
 	const FTransform OwnerTransform = GetOwner() ? GetOwner()->GetActorTransform() : FTransform::Identity;
 
+	// Sampled at each instance's own placement position (not once per whole building) -- a single
+	// footprint polygon often represents a whole terrace row, and a single shared base Z visibly floats
+	// or sinks relative to the actual wall on sloped terrain once the wall itself follows the ground
+	// (see StreetMapComponent::GenerateMesh's per-edge subdivision).
+	auto SampleDetailZ = [&]( const FVector2D& Pos ) -> float
+	{
+		float SampledZ = 0.0f;
+		if( TerrainLandscapePtr != nullptr )
+		{
+			StreetMapTerrainUtils::TrySampleLocalZ( TerrainLandscapePtr, OwnerTransform, Pos, SampledZ );
+		}
+		return SampledZ;
+	};
+
 	const TArray<FStreetMapBuilding>& Buildings = StreetMap->GetBuildings();
 
 	int32 BuildingsProcessed = 0;
@@ -121,20 +135,6 @@ void UStreetMapBuildingDetailsComponent::GenerateBuildingDetails()
 		if( NumPoints < 3 )
 		{
 			continue;
-		}
-
-		// Sampled once at the footprint centroid -- see StreetMapComponent::GenerateMesh's identical
-		// per-building choice (single flat base, not per-vertex) and its rationale.
-		FVector2D BuildingCentroid( 0.0, 0.0 );
-		for( const FVector2D& BuildingPoint : Building.BuildingPoints )
-		{
-			BuildingCentroid += BuildingPoint;
-		}
-		BuildingCentroid /= (double)NumPoints;
-		float BuildingBaseZ = 0.0f;
-		if( TerrainLandscapePtr != nullptr )
-		{
-			StreetMapTerrainUtils::TrySampleLocalZ( TerrainLandscapePtr, OwnerTransform, BuildingCentroid, BuildingBaseZ );
 		}
 
 		// Same fallback used for BuildingFillZ in StreetMapComponent.cpp: real height wins, otherwise
@@ -211,7 +211,6 @@ void UStreetMapBuildingDetailsComponent::GenerateBuildingDetails()
 
 				for( int32 FloorIndex = 0; FloorIndex < NumFloors; ++FloorIndex )
 				{
-					const float FloorZ = BuildingBaseZ + WindowSillHeightOffset + FloorHeight * (float)FloorIndex;
 					const bool bAsymmetric = bFrontHasDoor && FloorIndex == 0;
 					const bool bWantLeft = !bAsymmetric || ( ( HouseIndex & 1 ) == 0 );
 					const bool bWantRight = !bAsymmetric || ( ( HouseIndex & 1 ) != 0 );
@@ -222,6 +221,7 @@ void UStreetMapBuildingDetailsComponent::GenerateBuildingDetails()
 						if( Dist >= HouseStart + CornerMargin )
 						{
 							const FVector2D Pos = EA + EDir * Dist;
+							const float FloorZ = SampleDetailZ( Pos ) + WindowSillHeightOffset + FloorHeight * (float)FloorIndex;
 							FTransform WindowTransform( ERotation, FVector( (float)Pos.X, (float)Pos.Y, FloorZ ), FVector( WindowMeshScale ) );
 							WindowInstances->AddInstance( WindowTransform );
 							++WindowsPlaced;
@@ -233,6 +233,7 @@ void UStreetMapBuildingDetailsComponent::GenerateBuildingDetails()
 						if( Dist <= HouseStart + PerHouseWidth - CornerMargin )
 						{
 							const FVector2D Pos = EA + EDir * Dist;
+							const float FloorZ = SampleDetailZ( Pos ) + WindowSillHeightOffset + FloorHeight * (float)FloorIndex;
 							FTransform WindowTransform( ERotation, FVector( (float)Pos.X, (float)Pos.Y, FloorZ ), FVector( WindowMeshScale ) );
 							WindowInstances->AddInstance( WindowTransform );
 							++WindowsPlaced;
@@ -260,7 +261,7 @@ void UStreetMapBuildingDetailsComponent::GenerateBuildingDetails()
 				{
 					const double HouseCenter = ( HouseIndex + 0.5 ) * PerHouseWidth;
 					const FVector2D Pos = DoorA + DoorEdgeDir * HouseCenter;
-					FTransform DoorTransform( DoorRotation, FVector( (float)Pos.X, (float)Pos.Y, BuildingBaseZ + DoorSillHeightOffset ), FVector( DoorMeshScale ) );
+					FTransform DoorTransform( DoorRotation, FVector( (float)Pos.X, (float)Pos.Y, SampleDetailZ( Pos ) + DoorSillHeightOffset ), FVector( DoorMeshScale ) );
 					DoorInstances->AddInstance( DoorTransform );
 					++DoorsPlaced;
 				}

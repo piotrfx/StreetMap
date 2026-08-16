@@ -291,6 +291,19 @@ void UStreetMapComponent::GenerateMesh()
 			return FallbackZ;
 		};
 
+		// Roads sit exactly at sampled ground height by default, which is prone to z-fighting against the
+		// Landscape surface directly underneath. RoadOffsetZ (already an exposed, live-tunable property)
+		// now also doubles as a small lift above the sampled terrain, not just the flat-fallback value.
+		auto SampleRoadZ = [&]( const FVector2D& LocalXY ) -> float
+		{
+			float SampledZ;
+			if( TerrainLandscapePtr != nullptr && StreetMapTerrainUtils::TrySampleLocalZ( TerrainLandscapePtr, OwnerTransform, LocalXY, SampledZ ) )
+			{
+				return SampledZ + RoadZ;
+			}
+			return RoadZ;
+		};
+
 		const auto& Roads = StreetMap->GetRoads();
 		const auto& Nodes = StreetMap->GetNodes();
 		const auto& WaterAreas = StreetMap->GetWaterAreas();
@@ -336,19 +349,35 @@ void UStreetMapComponent::GenerateMesh()
 					break;
 			}
 			
+			// OSM nodes on a long straight road can be tens of meters apart -- sampling terrain height only
+			// at those nodes and bridging with a single straight ribbon lets the road float over any dip
+			// (or cut through any rise) that falls between them. Subdivide each segment so height is
+			// resampled at least every MaxRoadSubdivisionLength, following the ground in between too.
+			const float MaxRoadSubdivisionLength = 1000.0f; // cm
 			for( int32 PointIndex = 0; PointIndex < Road.RoadPoints.Num() - 1; ++PointIndex )
 			{
-				const float StartZ = SampleLocalZ( Road.RoadPoints[ PointIndex ], RoadZ );
-				const float EndZ = SampleLocalZ( Road.RoadPoints[ PointIndex + 1 ], RoadZ );
-				AddThick2DLine(
-					FVector2f(Road.RoadPoints[ PointIndex ]),
-					FVector2f(Road.RoadPoints[ PointIndex + 1 ]),
-					StartZ,
-					EndZ,
-					RoadThickness,
-					RoadColor,
-					RoadColor,
-					MeshBoundingBox );
+				const FVector2D SegmentStart = Road.RoadPoints[ PointIndex ];
+				const FVector2D SegmentEnd = Road.RoadPoints[ PointIndex + 1 ];
+				const int32 NumSubSegments = FMath::Max( 1, FMath::CeilToInt( FVector2D::Distance( SegmentStart, SegmentEnd ) / MaxRoadSubdivisionLength ) );
+
+				FVector2D PrevSubPoint = SegmentStart;
+				float PrevSubZ = SampleRoadZ( SegmentStart );
+				for( int32 SubIndex = 1; SubIndex <= NumSubSegments; ++SubIndex )
+				{
+					const FVector2D SubPoint = FMath::Lerp( SegmentStart, SegmentEnd, (double)SubIndex / (double)NumSubSegments );
+					const float SubZ = SampleRoadZ( SubPoint );
+					AddThick2DLine(
+						FVector2f(PrevSubPoint),
+						FVector2f(SubPoint),
+						PrevSubZ,
+						SubZ,
+						RoadThickness,
+						RoadColor,
+						RoadColor,
+						MeshBoundingBox );
+					PrevSubPoint = SubPoint;
+					PrevSubZ = SubZ;
+				}
 			}
 
 			// Fill the gap/overlap left at each interior bend between two independently-capped segments
@@ -362,7 +391,7 @@ void UStreetMapComponent::GenerateMesh()
 				const FVector2f PrevDirection = ( JointPoint - PrevPoint ).GetSafeNormal();
 				const FVector2f NextDirection = ( NextPoint - JointPoint ).GetSafeNormal();
 
-				const float JointZ = SampleLocalZ( Road.RoadPoints[ PointIndex ], RoadZ );
+				const float JointZ = SampleRoadZ( Road.RoadPoints[ PointIndex ] );
 				AddRoadJoin( JointPoint, PrevDirection, NextDirection, JointZ, RoadThickness, RoadColor, MeshBoundingBox );
 			}
 		}
@@ -412,6 +441,29 @@ void UStreetMapComponent::GenerateMesh()
 			}
 			BuildingCentroid /= (double)Building.BuildingPoints.Num();
 			const float BuildingBaseZ = SampleLocalZ( BuildingCentroid, 0.0f );
+
+			// Per-edge terrain sampling for lit walls and the gable roof (below) -- lets long terrace
+			// walls/eaves follow real ground contour instead of sitting at one flat BuildingBaseZ.
+			// Subdivides an edge into steps no longer than MaxWallSubdivisionLength, sampling height at
+			// every step (not just the two endpoints), so adjacent sub-quads/strips share an exact
+			// boundary sample and never show a seam. Computed unconditionally (like BuildingBaseZ above)
+			// so a walls-only or roof-only component/actor (see MeshLayer split below) computes identical
+			// results to a combined one -- the eave/wall-top boundary must line up exactly either way.
+			const float MaxWallSubdivisionLength = 400.0f; // cm
+			auto SampleEdgeProfile = [&]( int32 A_Index, int32 B_Index ) -> TArray<TPair<FVector2D,float>>
+			{
+				const FVector2D& A = Building.BuildingPoints[ A_Index ];
+				const FVector2D& B = Building.BuildingPoints[ B_Index ];
+				const int32 N = FMath::Max( 1, FMath::CeilToInt( FVector2D::Distance( A, B ) / MaxWallSubdivisionLength ) );
+				TArray<TPair<FVector2D,float>> Profile;
+				Profile.Reserve( N + 1 );
+				for( int32 SubIndex = 0; SubIndex <= N; ++SubIndex )
+				{
+					const FVector2D P = FMath::Lerp( A, B, (double)SubIndex / (double)N );
+					Profile.Add( TPair<FVector2D,float>( P, SampleLocalZ( P, 0.0f ) ) );
+				}
+				return Profile;
+			};
 
 			// Triangulate this building
 			// @todo: Performance: Triangulating lots of building polygons is quite slow.  We could easily do this
@@ -474,10 +526,10 @@ void UStreetMapComponent::GenerateMesh()
 						AddTriangles( TempPoints, TempUVs, TempIndices, FVector3f::ForwardVector, FVector3f::UpVector, BuildingFillColor, MeshBoundingBox );
 					};
 
-					// Find the longest edge of the actual footprint polygon and use its direction as
-					// the ridge axis, instead of the world X/Y axes -- most real building footprints
-					// are rotated relative to the map's lat/long grid, and an axis-aligned bounding
-					// box for a rotated rectangle balloons out well past its actual walls.
+					// Ridge axis: direction of the footprint's longest edge, instead of the world X/Y axes --
+					// most real building footprints are rotated relative to the map's lat/long grid, and
+					// an axis-aligned bounding box for a rotated rectangle balloons out well past its
+					// actual walls.
 					FVector2D RidgeDir( 1.0, 0.0 );
 					{
 						double LongestEdgeLenSq = 0.0;
@@ -509,7 +561,7 @@ void UStreetMapComponent::GenerateMesh()
 						VMin = FMath::Min( VMin, V ); VMax = FMath::Max( VMax, V );
 					}
 					const double VMid = ( VMin + VMax ) * 0.5;
-					const float RidgeZ = BuildingFillZ + FMath::Clamp( 0.35f * (float)( VMax - VMin ), 150.0f, 600.0f );
+					const float RidgeRiseOffset = FMath::Clamp( 0.35f * (float)( VMax - VMin ), 150.0f, 600.0f );
 
 					auto MakePoint = [&]( double U, double V, float Z ) -> FVector3f
 					{
@@ -517,16 +569,42 @@ void UStreetMapComponent::GenerateMesh()
 						return FVector3f( (float)WorldXY.X, (float)WorldXY.Y, Z );
 					};
 
-					AddQuad(
-						MakePoint( UMin, VMin, BuildingFillZ ), MakePoint( UMax, VMin, BuildingFillZ ),
-						MakePoint( UMax, VMid, RidgeZ ), MakePoint( UMin, VMid, RidgeZ ) );
-					AddQuad(
-						MakePoint( UMax, VMax, BuildingFillZ ), MakePoint( UMin, VMax, BuildingFillZ ),
-						MakePoint( UMin, VMid, RidgeZ ), MakePoint( UMax, VMid, RidgeZ ) );
+					// Sample front (V=VMin) and back (V=VMax) eave height along a fixed U grid derived
+					// from the oriented bounding box itself -- NOT by searching the footprint polygon for
+					// a matching "front"/"back" edge pair (an earlier version of this code did that, and
+					// it proved unreliable on real terrace data: many small facade jogs/notches let the
+					// search grab a mismatched, oddly-short edge, giving the two sides different U-ranges/
+					// point-counts and producing a fragmented, self-intersecting roof). The bounding box's
+					// own U range is always well-defined and identical for both sides, so front and back
+					// stay perfectly aligned regardless of how messy the actual polygon is.
+					const int32 NumRoofSteps = FMath::Max( 1, FMath::CeilToInt( ( UMax - UMin ) / MaxWallSubdivisionLength ) );
+					TArray<float> FrontZ, BackZ, RidgeZArr;
+					FrontZ.SetNum( NumRoofSteps + 1 );
+					BackZ.SetNum( NumRoofSteps + 1 );
+					RidgeZArr.SetNum( NumRoofSteps + 1 );
+					for( int32 StepIndex = 0; StepIndex <= NumRoofSteps; ++StepIndex )
+					{
+						const double U = FMath::Lerp( UMin, UMax, (double)StepIndex / (double)NumRoofSteps );
+						FrontZ[ StepIndex ] = SampleLocalZ( RidgeDir * U + PerpDir * VMin, BuildingBaseZ ) + BuildingHeightAboveBase;
+						BackZ[ StepIndex ] = SampleLocalZ( RidgeDir * U + PerpDir * VMax, BuildingBaseZ ) + BuildingHeightAboveBase;
+						RidgeZArr[ StepIndex ] = 0.5f * ( FrontZ[ StepIndex ] + BackZ[ StepIndex ] ) + RidgeRiseOffset;
+					}
+
+					for( int32 StepIndex = 0; StepIndex < NumRoofSteps; ++StepIndex )
+					{
+						const double U0 = FMath::Lerp( UMin, UMax, (double)StepIndex / (double)NumRoofSteps );
+						const double U1 = FMath::Lerp( UMin, UMax, (double)( StepIndex + 1 ) / (double)NumRoofSteps );
+						AddQuad(
+							MakePoint( U0, VMin, FrontZ[ StepIndex ] ), MakePoint( U1, VMin, FrontZ[ StepIndex + 1 ] ),
+							MakePoint( U1, VMid, RidgeZArr[ StepIndex + 1 ] ), MakePoint( U0, VMid, RidgeZArr[ StepIndex ] ) );
+						AddQuad(
+							MakePoint( U1, VMax, BackZ[ StepIndex + 1 ] ), MakePoint( U0, VMax, BackZ[ StepIndex ] ),
+							MakePoint( U0, VMid, RidgeZArr[ StepIndex ] ), MakePoint( U1, VMid, RidgeZArr[ StepIndex + 1 ] ) );
+					}
 					AddTri(
-						MakePoint( UMin, VMin, BuildingFillZ ), MakePoint( UMin, VMid, RidgeZ ), MakePoint( UMin, VMax, BuildingFillZ ) );
+						MakePoint( UMin, VMin, FrontZ[0] ), MakePoint( UMin, VMid, RidgeZArr[0] ), MakePoint( UMin, VMax, BackZ[0] ) );
 					AddTri(
-						MakePoint( UMax, VMax, BuildingFillZ ), MakePoint( UMax, VMid, RidgeZ ), MakePoint( UMax, VMin, BuildingFillZ ) );
+						MakePoint( UMax, VMax, BackZ[NumRoofSteps] ), MakePoint( UMax, VMid, RidgeZArr[NumRoofSteps] ), MakePoint( UMax, VMin, FrontZ[NumRoofSteps] ) );
 				}
 				else if( bWantRoofGeometry )
 				{
@@ -547,48 +625,61 @@ void UStreetMapComponent::GenerateMesh()
 					// NOTE: Lit buildings can't share vertices beyond quads (all quads have their own face normals), so this uses a lot more geometry!
 					if( bWantLitBuildings )
 					{
-						// Create edges for the walls of the 3D buildings
+						// Create edges for the walls of the 3D buildings -- each polygon edge subdivided via
+						// SampleEdgeProfile (instead of one quad spanning the whole edge at a single flat
+						// BuildingBaseZ/BuildingFillZ) so long terrace walls follow real ground contour.
+						// Wall height stays constant (BuildingHeightAboveBase); only the base/top each
+						// sub-quad extrudes from varies along the edge.
 						for( int32 LeftPointIndex = 0; LeftPointIndex < Building.BuildingPoints.Num(); ++LeftPointIndex )
 						{
 							const int32 RightPointIndex = ( LeftPointIndex + 1 ) % Building.BuildingPoints.Num();
+							const TArray<TPair<FVector2D,float>> EdgeProfile = SampleEdgeProfile( LeftPointIndex, RightPointIndex );
 
-							TempPoints.SetNum( 4, EAllowShrinking::No );
+							for( int32 SubIndex = 0; SubIndex < EdgeProfile.Num() - 1; ++SubIndex )
+							{
+								const FVector2D& SubLeft2D = EdgeProfile[ SubIndex ].Key;
+								const float SubLeftBaseZ = EdgeProfile[ SubIndex ].Value;
+								const FVector2D& SubRight2D = EdgeProfile[ SubIndex + 1 ].Key;
+								const float SubRightBaseZ = EdgeProfile[ SubIndex + 1 ].Value;
 
-							const int32 TopLeftVertexIndex = 0;
-							TempPoints[ TopLeftVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? RightPointIndex : LeftPointIndex ]), BuildingFillZ );
+								TempPoints.SetNum( 4, EAllowShrinking::No );
 
-							const int32 TopRightVertexIndex = 1;
-							TempPoints[ TopRightVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? LeftPointIndex : RightPointIndex ]), BuildingFillZ );
+								const int32 TopLeftVertexIndex = 0;
+								TempPoints[ TopLeftVertexIndex ] = FVector3f( FVector2f(WindsClockwise ? SubRight2D : SubLeft2D), ( WindsClockwise ? SubRightBaseZ : SubLeftBaseZ ) + BuildingHeightAboveBase );
 
-							const int32 BottomRightVertexIndex = 2;
-							TempPoints[ BottomRightVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? LeftPointIndex : RightPointIndex ]), BuildingBaseZ );
+								const int32 TopRightVertexIndex = 1;
+								TempPoints[ TopRightVertexIndex ] = FVector3f( FVector2f(WindsClockwise ? SubLeft2D : SubRight2D), ( WindsClockwise ? SubLeftBaseZ : SubRightBaseZ ) + BuildingHeightAboveBase );
 
-							const int32 BottomLeftVertexIndex = 3;
-							TempPoints[ BottomLeftVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? RightPointIndex : LeftPointIndex ]), BuildingBaseZ );
+								const int32 BottomRightVertexIndex = 2;
+								TempPoints[ BottomRightVertexIndex ] = FVector3f( FVector2f(WindsClockwise ? SubLeft2D : SubRight2D), WindsClockwise ? SubLeftBaseZ : SubRightBaseZ );
 
-							// Simple per-edge 0-1 UV (same scheme as AddThick2DLine for roads): U runs across
-							// the edge, V runs up the wall height. Not seamless with neighboring edges, but
-							// gives every wall quad real texture variation instead of one flat sampled texel.
-							TempUVs.SetNum( 4, EAllowShrinking::No );
-							TempUVs[ TopLeftVertexIndex ] = FVector2f( 0.0f, 1.0f );
-							TempUVs[ TopRightVertexIndex ] = FVector2f( 1.0f, 1.0f );
-							TempUVs[ BottomRightVertexIndex ] = FVector2f( 1.0f, 0.0f );
-							TempUVs[ BottomLeftVertexIndex ] = FVector2f( 0.0f, 0.0f );
+								const int32 BottomLeftVertexIndex = 3;
+								TempPoints[ BottomLeftVertexIndex ] = FVector3f( FVector2f(WindsClockwise ? SubRight2D : SubLeft2D), WindsClockwise ? SubRightBaseZ : SubLeftBaseZ );
 
-							TempIndices.SetNum( 6, EAllowShrinking::No );
+								// Simple per-edge 0-1 UV (same scheme as AddThick2DLine for roads): U runs across
+								// the edge, V runs up the wall height. Not seamless with neighboring edges, but
+								// gives every wall quad real texture variation instead of one flat sampled texel.
+								TempUVs.SetNum( 4, EAllowShrinking::No );
+								TempUVs[ TopLeftVertexIndex ] = FVector2f( 0.0f, 1.0f );
+								TempUVs[ TopRightVertexIndex ] = FVector2f( 1.0f, 1.0f );
+								TempUVs[ BottomRightVertexIndex ] = FVector2f( 1.0f, 0.0f );
+								TempUVs[ BottomLeftVertexIndex ] = FVector2f( 0.0f, 0.0f );
 
-							TempIndices[ 0 ] = BottomLeftVertexIndex;
-							TempIndices[ 1 ] = TopLeftVertexIndex;
-							TempIndices[ 2 ] = BottomRightVertexIndex;
+								TempIndices.SetNum( 6, EAllowShrinking::No );
 
-							TempIndices[ 3 ] = BottomRightVertexIndex;
-							TempIndices[ 4 ] = TopLeftVertexIndex;
-							TempIndices[ 5 ] = TopRightVertexIndex;
+								TempIndices[ 0 ] = BottomLeftVertexIndex;
+								TempIndices[ 1 ] = TopLeftVertexIndex;
+								TempIndices[ 2 ] = BottomRightVertexIndex;
 
-							const FVector3f FaceNormal = FVector3f::CrossProduct( ( TempPoints[ 0 ] - TempPoints[ 2 ] ).GetSafeNormal(), ( TempPoints[ 0 ] - TempPoints[ 1 ] ).GetSafeNormal() );
-							const FVector3f ForwardVector = FVector3f::UpVector;
-							const FVector3f UpVector = FaceNormal;
-							AddTriangles( TempPoints, TempUVs, TempIndices, ForwardVector, UpVector, BuildingFillColor, MeshBoundingBox );
+								TempIndices[ 3 ] = BottomRightVertexIndex;
+								TempIndices[ 4 ] = TopLeftVertexIndex;
+								TempIndices[ 5 ] = TopRightVertexIndex;
+
+								const FVector3f FaceNormal = FVector3f::CrossProduct( ( TempPoints[ 0 ] - TempPoints[ 2 ] ).GetSafeNormal(), ( TempPoints[ 0 ] - TempPoints[ 1 ] ).GetSafeNormal() );
+								const FVector3f ForwardVector = FVector3f::UpVector;
+								const FVector3f UpVector = FaceNormal;
+								AddTriangles( TempPoints, TempUVs, TempIndices, ForwardVector, UpVector, BuildingFillColor, MeshBoundingBox );
+							}
 						}
 					}
 					else
