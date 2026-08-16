@@ -8,6 +8,7 @@
 
 class UBodySetup;
 class UMaterialInterface;
+class ALandscapeProxy;
 
 /**
  * Component that represents a section of street map roads and buildings
@@ -119,7 +120,11 @@ public:
 	/** Wipes out our cached mesh data. Designed to be called on demand.*/
 	void InvalidateMesh();
 
-	/** Rebuilds the graphics and physics mesh representation if we don't have one right now.  Designed to be called on demand. */
+	/** Rebuilds the graphics and physics mesh representation if we don't have one right now.  Designed to be called on demand.
+	 *  Exposed as CallInEditor (rather than only reachable via the Details-panel button's C++ handler) so external
+	 *  tooling -- e.g. batch-regenerating many map-layer components after a TerrainLandscape/data change -- can
+	 *  trigger it directly instead of requiring N manual clicks. */
+	UFUNCTION(CallInEditor, Category = "StreetMap")
 	void BuildMesh();
 
 
@@ -135,8 +140,8 @@ protected:
 	/** Generates a cached mesh from raw street map data */
 	void GenerateMesh();
 
-	/** Adds a 2D line to the raw mesh */
-	void AddThick2DLine(const FVector2f Start, const FVector2f End, const float Z, const float Thickness, const FColor& StartColor, const FColor& EndColor, FBox3f& MeshBoundingBox);
+	/** Adds a 2D line to the raw mesh. StartZ/EndZ are independent so a terrain-sampled segment can slope. */
+	void AddThick2DLine(const FVector2f Start, const FVector2f End, const float StartZ, const float EndZ, const float Thickness, const FColor& StartColor, const FColor& EndColor, FBox3f& MeshBoundingBox);
 
 	/** Fills the wedge-shaped gap/overlap left between two AddThick2DLine segments where they meet at an angle, so bends read as fluent rather than faceted */
 	void AddRoadJoin(const FVector2f JointPoint, const FVector2f PrevDirection, const FVector2f NextDirection, const float Z, const float Thickness, const FColor& Color, FBox3f& MeshBoundingBox);
@@ -160,6 +165,14 @@ protected:
 	 *  MeshLayer, to get independently-selectable, independently-materialed layers. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap")
 		EStreetMapMeshLayer MeshLayer = EStreetMapMeshLayer::All;
+
+	/** Optional Landscape to conform generated roads/buildings/water to. Roads sample height per-point
+	 *  (so segments can slope); buildings/water sample once per footprint centroid (a single flat base
+	 *  per building -- the gable-roof generator requires one flat eave plane, and footprints are small
+	 *  relative to typical terrain relief, so this stays visually correct). Left unset, generation falls
+	 *  back to the original flat behavior (RoadOffsetZ / local Z=0). */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Terrain")
+		TSoftObjectPtr<ALandscapeProxy> TerrainLandscape;
 
 	UPROPERTY(EditAnywhere, Category = "StreetMap")
 		FStreetMapCollisionSettings CollisionSettings;

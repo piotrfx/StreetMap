@@ -21,7 +21,8 @@ public class StreetMapRuntime : ModuleRules
                 "NavigationSystem",
                 "PhysicsCore",
                 "RenderCore",
-                "RHI"
+                "RHI",
+                "Landscape"
             });
     }
 }

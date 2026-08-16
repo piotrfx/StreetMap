@@ -7,6 +7,7 @@
 class UStreetMap;
 class UStaticMesh;
 class UHierarchicalInstancedStaticMeshComponent;
+class ALandscapeProxy;
 
 /** Scatters window and door static mesh instances across a UStreetMap's building walls, using
  *  HierarchicalInstancedStaticMeshComponents (not individual actors) since a real map can have
@@ -35,6 +36,13 @@ public:
 	/** The street map to read building footprints/heights from. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap")
 	UStreetMap* StreetMap = nullptr;
+
+	/** Optional Landscape to conform window/door placement to. Sampled once per building at the
+	 *  footprint centroid -- independently of any StreetMapComponent's own sample, since this
+	 *  component lives on its own actor with its own transform. Left unset, falls back to the
+	 *  original flat local Z=0 base. */
+	UPROPERTY(EditAnywhere, Category = "StreetMap|Terrain")
+	TSoftObjectPtr<ALandscapeProxy> TerrainLandscape;
 
 	/** Mesh instanced for windows. Assumed to face +X with its pivot roughly centered on the pane, sitting flush against a wall when placed at the wall surface. */
 	UPROPERTY(EditAnywhere, Category = "StreetMap")

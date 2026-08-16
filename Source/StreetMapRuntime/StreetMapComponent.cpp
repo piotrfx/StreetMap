@@ -10,6 +10,7 @@
 #include "StaticMeshResources.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "UObject/ConstructorHelpers.h"
+#include "StreetMapTerrainUtils.h"
 
 #if WITH_EDITOR
 #include "Modules/ModuleManager.h"
@@ -275,6 +276,21 @@ void UStreetMapComponent::GenerateMesh()
 		FBox3f MeshBoundingBox;
 		MeshBoundingBox.Init();
 
+		// Resolved once per generation -- LocalXY is in this component's owner's local space (the same
+		// space Road.RoadPoints/Building.BuildingPoints are already stored in), converted to world space
+		// via OwnerTransform before querying the Landscape, then back to local space for the mesh data.
+		ALandscapeProxy* TerrainLandscapePtr = TerrainLandscape.LoadSynchronous();
+		const FTransform OwnerTransform = GetOwner() ? GetOwner()->GetActorTransform() : FTransform::Identity;
+		auto SampleLocalZ = [&]( const FVector2D& LocalXY, float FallbackZ ) -> float
+		{
+			float SampledZ;
+			if( TerrainLandscapePtr != nullptr && StreetMapTerrainUtils::TrySampleLocalZ( TerrainLandscapePtr, OwnerTransform, LocalXY, SampledZ ) )
+			{
+				return SampledZ;
+			}
+			return FallbackZ;
+		};
+
 		const auto& Roads = StreetMap->GetRoads();
 		const auto& Nodes = StreetMap->GetNodes();
 		const auto& WaterAreas = StreetMap->GetWaterAreas();
@@ -322,10 +338,13 @@ void UStreetMapComponent::GenerateMesh()
 			
 			for( int32 PointIndex = 0; PointIndex < Road.RoadPoints.Num() - 1; ++PointIndex )
 			{
+				const float StartZ = SampleLocalZ( Road.RoadPoints[ PointIndex ], RoadZ );
+				const float EndZ = SampleLocalZ( Road.RoadPoints[ PointIndex + 1 ], RoadZ );
 				AddThick2DLine(
 					FVector2f(Road.RoadPoints[ PointIndex ]),
 					FVector2f(Road.RoadPoints[ PointIndex + 1 ]),
-					RoadZ,
+					StartZ,
+					EndZ,
 					RoadThickness,
 					RoadColor,
 					RoadColor,
@@ -343,7 +362,8 @@ void UStreetMapComponent::GenerateMesh()
 				const FVector2f PrevDirection = ( JointPoint - PrevPoint ).GetSafeNormal();
 				const FVector2f NextDirection = ( NextPoint - JointPoint ).GetSafeNormal();
 
-				AddRoadJoin( JointPoint, PrevDirection, NextDirection, RoadZ, RoadThickness, RoadColor, MeshBoundingBox );
+				const float JointZ = SampleLocalZ( Road.RoadPoints[ PointIndex ], RoadZ );
+				AddRoadJoin( JointPoint, PrevDirection, NextDirection, JointZ, RoadThickness, RoadColor, MeshBoundingBox );
 			}
 		}
 		
@@ -379,8 +399,22 @@ void UStreetMapComponent::GenerateMesh()
 
 			// Building mesh (or filled area, if the building has no height)
 
+			// Base Z for this building: sampled once at the footprint centroid (not per-vertex -- the
+			// gable-roof generator below requires one flat eave plane, and footprints are small
+			// relative to typical terrain relief, so a single flat base per building stays visually
+			// correct). Falls back to the original flat local Z=0 where no TerrainLandscape is set.
+			// Computed here (rather than inside the triangulation block below) since the building-border
+			// pass further down needs it too, regardless of whether triangulation succeeds.
+			FVector2D BuildingCentroid( 0.0, 0.0 );
+			for( const FVector2D& BuildingPoint : Building.BuildingPoints )
+			{
+				BuildingCentroid += BuildingPoint;
+			}
+			BuildingCentroid /= (double)Building.BuildingPoints.Num();
+			const float BuildingBaseZ = SampleLocalZ( BuildingCentroid, 0.0f );
+
 			// Triangulate this building
-			// @todo: Performance: Triangulating lots of building polygons is quite slow.  We could easily do this 
+			// @todo: Performance: Triangulating lots of building polygons is quite slow.  We could easily do this
 			//        as part of the import process and store tessellated geometry instead of doing this at load time.
 			bool WindsClockwise;
 			if( FPolygonTools::TriangulatePolygon( Building.BuildingPoints, TempIndices, /* Out */ TriangulatedVertexIndices, /* Out */ WindsClockwise ) )
@@ -392,22 +426,23 @@ void UStreetMapComponent::GenerateMesh()
 
 				// calculate fill Z for buildings
 				// either use the defined height or extrapolate from building level count
-				float BuildingFillZ = 0.0f;
+				float BuildingHeightAboveBase = 0.0f;
 				if (bWant3DBuildings) {
 					if (Building.Height > 0) {
-						BuildingFillZ = Building.Height;
+						BuildingHeightAboveBase = Building.Height;
 					}
 					else if (Building.BuildingLevels > 0) {
-						BuildingFillZ = (float)Building.BuildingLevels * BuildingLevelFloorFactor;
+						BuildingHeightAboveBase = (float)Building.BuildingLevels * BuildingLevelFloorFactor;
 					}
-				}		
+				}
+				const float BuildingFillZ = BuildingBaseZ + BuildingHeightAboveBase;
 
 				// Top of building: a pitched (gable) roof for residential buildings, a flat cap otherwise.
 				// The gable roof is approximated from an oriented bounding rectangle (aligned to the
 				// footprint's longest edge) rather than the exact polygon, so it may not perfectly
 				// hug very irregular (e.g. L-shaped) footprints -- an acceptable tradeoff given most
 				// OSM house footprints are roughly rectangular.
-				const bool bWantGableRoof = Building.bIsResidential && BuildingFillZ > KINDA_SMALL_NUMBER;
+				const bool bWantGableRoof = Building.bIsResidential && BuildingHeightAboveBase > KINDA_SMALL_NUMBER;
 				if( bWantGableRoof && bWantRoofGeometry )
 				{
 					// Emits both winding orders for each face, so it renders regardless of which
@@ -526,10 +561,10 @@ void UStreetMapComponent::GenerateMesh()
 							TempPoints[ TopRightVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? LeftPointIndex : RightPointIndex ]), BuildingFillZ );
 
 							const int32 BottomRightVertexIndex = 2;
-							TempPoints[ BottomRightVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? LeftPointIndex : RightPointIndex ]), 0.0f );
+							TempPoints[ BottomRightVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? LeftPointIndex : RightPointIndex ]), BuildingBaseZ );
 
 							const int32 BottomLeftVertexIndex = 3;
-							TempPoints[ BottomLeftVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? RightPointIndex : LeftPointIndex ]), 0.0f );
+							TempPoints[ BottomLeftVertexIndex ] = FVector3f( FVector2f(Building.BuildingPoints[ WindsClockwise ? RightPointIndex : LeftPointIndex ]), BuildingBaseZ );
 
 							// Simple per-edge 0-1 UV (same scheme as AddThick2DLine for roads): U runs across
 							// the edge, V runs up the wall height. Not seamless with neighboring edges, but
@@ -565,7 +600,7 @@ void UStreetMapComponent::GenerateMesh()
 							const FVector2D Point = Building.BuildingPoints[ PointIndex ];
 
 							FStreetMapVertex& NewVertex = *new( this->Vertices )FStreetMapVertex();
-							NewVertex.Position = FVector3f( FVector2f(Point), 0.0f );
+							NewVertex.Position = FVector3f( FVector2f(Point), BuildingBaseZ );
 							NewVertex.TextureCoordinate = FVector2f( 0.0f, 0.0f );	// NOTE: We're not using texture coordinates for anything yet
 							NewVertex.TangentX = FVector3f::ForwardVector;	 // NOTE: Tangents aren't important for these unlit buildings
 							NewVertex.TangentZ = FVector3f::UpVector;
@@ -609,7 +644,8 @@ void UStreetMapComponent::GenerateMesh()
 					AddThick2DLine(
 						FVector2f(Building.BuildingPoints[ PointIndex ]),
 						FVector2f(Building.BuildingPoints[ ( PointIndex + 1 ) % Building.BuildingPoints.Num() ]),
-						BuildingBorderZ,
+						BuildingBaseZ + BuildingBorderZ,
+						BuildingBaseZ + BuildingBorderZ,
 						BuildingBorderThickness,		// Thickness
 						BuildingBorderColor,
 						BuildingBorderColor,
@@ -628,10 +664,19 @@ void UStreetMapComponent::GenerateMesh()
 			bool bWaterAreaWindsClockwise;
 			if( FPolygonTools::TriangulatePolygon( WaterArea.WaterAreaPoints, TempIndices, /* Out */ TriangulatedVertexIndices, /* Out */ bWaterAreaWindsClockwise ) )
 			{
+				// A water surface is inherently flat -- one sample per pond/lake centroid, like buildings.
+				FVector2D WaterAreaCentroid( 0.0, 0.0 );
+				for( const FVector2D& WaterAreaPoint : WaterArea.WaterAreaPoints )
+				{
+					WaterAreaCentroid += WaterAreaPoint;
+				}
+				WaterAreaCentroid /= (double)WaterArea.WaterAreaPoints.Num();
+				const float WaterAreaZ = SampleLocalZ( WaterAreaCentroid, RoadZ );
+
 				TempPoints.SetNum( WaterArea.WaterAreaPoints.Num(), EAllowShrinking::No );
 				for( int32 PointIndex = 0; PointIndex < WaterArea.WaterAreaPoints.Num(); ++PointIndex )
 				{
-					TempPoints[ PointIndex ] = FVector3f( FVector2f(WaterArea.WaterAreaPoints[ ( WaterArea.WaterAreaPoints.Num() - PointIndex ) - 1 ]), RoadZ );
+					TempPoints[ PointIndex ] = FVector3f( FVector2f(WaterArea.WaterAreaPoints[ ( WaterArea.WaterAreaPoints.Num() - PointIndex ) - 1 ]), WaterAreaZ );
 				}
 				AddTriangles( TempPoints, ComputeXYBoundingBoxUVs( TempPoints ), TriangulatedVertexIndices, FVector3f::ForwardVector, FVector3f::UpVector, WaterAreaColor, MeshBoundingBox );
 			}
@@ -756,7 +801,7 @@ FBoxSphereBounds UStreetMapComponent::CalcBounds( const FTransform& LocalToWorld
 }
 
 
-void UStreetMapComponent::AddThick2DLine( const FVector2f Start, const FVector2f End, const float Z, const float Thickness, const FColor& StartColor, const FColor& EndColor, FBox3f& MeshBoundingBox )
+void UStreetMapComponent::AddThick2DLine( const FVector2f Start, const FVector2f End, const float StartZ, const float EndZ, const float Thickness, const FColor& StartColor, const FColor& EndColor, FBox3f& MeshBoundingBox )
 {
 	const float HalfThickness = Thickness * 0.5f;
 
@@ -765,7 +810,7 @@ void UStreetMapComponent::AddThick2DLine( const FVector2f Start, const FVector2f
 
 	const int32 BottomLeftVertexIndex = Vertices.Num();
 	FStreetMapVertex& BottomLeftVertex = *new( Vertices )FStreetMapVertex();
-	BottomLeftVertex.Position = FVector3f( Start - RightVector * HalfThickness, Z );
+	BottomLeftVertex.Position = FVector3f( Start - RightVector * HalfThickness, StartZ );
 	BottomLeftVertex.TextureCoordinate = FVector2f( 0.0f, 0.0f );
 	BottomLeftVertex.TangentX = FVector3f( LineDirection, 0.0f );
 	BottomLeftVertex.TangentZ = FVector3f::UpVector;
@@ -774,7 +819,7 @@ void UStreetMapComponent::AddThick2DLine( const FVector2f Start, const FVector2f
 
 	const int32 BottomRightVertexIndex = Vertices.Num();
 	FStreetMapVertex& BottomRightVertex = *new( Vertices )FStreetMapVertex();
-	BottomRightVertex.Position = FVector3f( Start + RightVector * HalfThickness, Z );
+	BottomRightVertex.Position = FVector3f( Start + RightVector * HalfThickness, StartZ );
 	BottomRightVertex.TextureCoordinate = FVector2f( 1.0f, 0.0f );
 	BottomRightVertex.TangentX = FVector3f( LineDirection, 0.0f );
 	BottomRightVertex.TangentZ = FVector3f::UpVector;
@@ -783,7 +828,7 @@ void UStreetMapComponent::AddThick2DLine( const FVector2f Start, const FVector2f
 
 	const int32 TopRightVertexIndex = Vertices.Num();
 	FStreetMapVertex& TopRightVertex = *new( Vertices )FStreetMapVertex();
-	TopRightVertex.Position = FVector3f( End + RightVector * HalfThickness, Z );
+	TopRightVertex.Position = FVector3f( End + RightVector * HalfThickness, EndZ );
 	TopRightVertex.TextureCoordinate = FVector2f( 1.0f, 1.0f );
 	TopRightVertex.TangentX = FVector3f( LineDirection, 0.0f );
 	TopRightVertex.TangentZ = FVector3f::UpVector;
@@ -792,7 +837,7 @@ void UStreetMapComponent::AddThick2DLine( const FVector2f Start, const FVector2f
 
 	const int32 TopLeftVertexIndex = Vertices.Num();
 	FStreetMapVertex& TopLeftVertex = *new( Vertices )FStreetMapVertex();
-	TopLeftVertex.Position = FVector3f( End - RightVector * HalfThickness, Z );
+	TopLeftVertex.Position = FVector3f( End - RightVector * HalfThickness, EndZ );
 	TopLeftVertex.TextureCoordinate = FVector2f( 0.0f, 1.0f );
 	TopLeftVertex.TangentX = FVector3f( LineDirection, 0.0f );
 	TopLeftVertex.TangentZ = FVector3f::UpVector;
